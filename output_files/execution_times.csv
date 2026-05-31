@@ -1,8 +1,0 @@
-timestamp_start_utc,surface1,surface2,duration_s
-<<<<<<< HEAD
-2026-05-31T23:31:59.593028,1a1u_A,1a1u_C,102.85045425000135
-=======
-2026-05-31T20:05:38.206559,1a1u_A,1a1u_C,339.87100979100796
-2026-05-31T20:17:24.293680,1a1u_A,1a1u_C,13.02832404099172
-2026-05-31T20:19:55.125230,1a1u_A,1a1u_C,102.83282066698303
->>>>>>> a1bbcf1 (Passa l’oggetto cache a zepyros per sfruttare l’ottimizzazione)
