@@ -32,10 +32,11 @@ class BindingPropensity:
         nrow = len(surf.index)
         sampled = range(0, nrow, 10)
         coeff_array = np.zeros((len(sampled), 121))
+        z_obj = None
 
         for i, ndx in enumerate(tqdm.tqdm(sampled)):
-            coeff, _, _, _ = zp.get_zernike(
-                surf[['x', 'y', 'z', 'nx', 'ny', 'nz']], 6.0, ndx, 20, int(verso)
+            coeff, _, _, z_obj = zp.get_zernike(
+                surf[['x', 'y', 'z', 'nx', 'ny', 'nz']], 6.0, ndx, 20, int(verso), zernike_obj=z_obj
             )
             coeff_array[i, :] = coeff
 
