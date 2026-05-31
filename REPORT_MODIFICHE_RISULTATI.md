@@ -52,8 +52,21 @@ Esito:
 - I valori sono però equivalenti numericamente entro tolleranza floating-point.
 - `np.allclose(..., equal_nan=True)` è risultato `True` per entrambi i file.
 - Differenza assoluta massima osservata:
-  - circa `2.02e-08` per `1a1u_A_bp.csv`
-  - circa `2.09e-08` per `1a1u_C_bp.csv`
+  - circa `2.056e-08` per `1a1u_A_bp.csv`
+  - circa `2.117e-08` per `1a1u_C_bp.csv`
+
+## Aggiornamento confronto tempi (finale)
+
+- Sono stati confrontati i file `execution_times.csv` presenti in `originals/` e in `output_files/`.
+- Media complessiva dei tempi misurata:
+  - originals: **7874.275 s** (mean)
+  - output_files: **102.850 s** (mean)
+  - Miglioramento percentuale complessivo: **98.69%**
+
+- Confronto per coppia di superfici (media):
+  - `1a1u_A + 1a1u_C`: **7874.275 s** -> **102.850 s** (improvement **98.69%**)
+
+Nota: i valori in `originals/execution_times.csv` comprendono run precedenti accumulati; per maggiore accuratezza si può confrontare singole righe o medie per sessione.
 
 ## Conclusione
 Le ottimizzazioni hanno confermato che il collo di bottiglia principale era nel calcolo interno di `zepyros`. Il riuso di `zernike_obj` ha portato un miglioramento drastico del runtime, mantenendo i risultati numericamente equivalenti agli originals.
