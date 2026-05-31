@@ -5,6 +5,8 @@ from scipy.spatial.distance import cdist
 from pathlib import Path
 import tqdm
 from docs import build_cli_binding_propensity
+import time
+from datetime import datetime
 
 np.seterr(divide='ignore', invalid='ignore')
 
@@ -64,6 +66,9 @@ class BindingPropensity:
         """
         Compute binding propensity
         """
+        start_wall = datetime.utcnow().isoformat()
+        start = time.perf_counter()
+
         print(f'compute Zernike invariants for {self.file_name1}')
         df_surf1, mat_coeff1 = self.get_all_invariants(self.surface1, verso=1)
         print(f'compute Zernike invariants for {self.file_name2}')
@@ -100,6 +105,21 @@ class BindingPropensity:
 
         df_bp1.to_csv(Path(self.output_path).joinpath(f'{self.file_name1}_bp.csv'), index=False)
         df_bp2.to_csv(Path(self.output_path).joinpath(f'{self.file_name2}_bp.csv'), index=False)
+
+        # record execution time
+        end = time.perf_counter()
+        duration = end - start
+
+        outdir = Path(self.output_path)
+        outdir.mkdir(parents=True, exist_ok=True)
+        runtime_file = outdir.joinpath('execution_times.csv')
+        row = {
+            'timestamp_start_utc': start_wall,
+            'surface1': self.file_name1,
+            'surface2': self.file_name2,
+            'duration_s': duration
+        }
+        pd.DataFrame([row]).to_csv(runtime_file, mode='a', header=not runtime_file.exists(), index=False)
 
 
 def main():

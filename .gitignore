@@ -6,3 +6,5 @@ old_data/
 input_files/1a1u.pdb
 input_files/get_chains.R
 uninstall.txt
+.venv-originale/
+.venv-ottimizzato/
