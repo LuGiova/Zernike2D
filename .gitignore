@@ -8,3 +8,4 @@ input_files/get_chains.R
 uninstall.txt
 .venv-originale/
 .venv-ottimizzato/
+.DS_Store
