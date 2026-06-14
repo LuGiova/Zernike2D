@@ -2,7 +2,7 @@
 name = "zernike2d"
 version = "0.1.0"
 description = ""
-authors = ["Your Name <you@example.com>"]
+authors = ["Giovanni Marzioni <marzioni.2060629@studenti.uniroma1.it>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
