@@ -16,3 +16,7 @@ six==1.16.0
 tqdm==4.66.4
 tzdata==2024.1
 zepyros @ git+https://github.com/LuGiova/zepyros.git
+
+# Additional requirements (used by the extra scripts documented in SCRIPTS.md)
+scikit-learn==1.5.0
+pykrige==1.7.2

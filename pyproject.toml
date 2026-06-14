@@ -24,7 +24,13 @@ seaborn = "0.12.2"
 six = "1.16.0"
 tqdm = "4.66.4"
 tzdata = "2024.1"
+<<<<<<< HEAD
 zepyros = {git = "https://github.com/matmi8/zepyros.git", rev = "4e16e76941e35c402868286340475151e75a92dc"}
+=======
+zepyros = {git = "https://github.com/LuGiova/zepyros.git"}
+scikit-learn = "1.5.0"
+pykrige = "1.7.2"
+>>>>>>> a6a17dd (Added complementary plane scripts)
 
 
 [build-system]
