@@ -1,32 +1,36 @@
-[tool.poetry]
+[project]
 name = "zernike2d"
 version = "0.1.0"
 description = ""
-authors = ["Giovanni Marzioni <marzioni.2060629@studenti.uniroma1.it>"]
+authors = [
+    {name = "Giovanni Marzioni", email = "marzioni.2060629@studenti.uniroma1.it"}
+]
 readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "contourpy==1.2.1",
+    "cycler==0.12.1",
+    "fonttools==4.51.0",
+    "kiwisolver==1.4.5",
+    "matplotlib==3.8.4",
+    "numpy==1.26.4",
+    "packaging==24.0",
+    "pandas==2.2.2",
+    "pillow==10.3.0",
+    "pyparsing==3.1.2",
+    "python-dateutil==2.9.0.post0",
+    "pytz==2024.1",
+    "scipy==1.13.0",
+    "seaborn==0.12.2",
+    "six==1.16.0",
+    "tqdm==4.66.4",
+    "tzdata==2024.1",
+    "zepyros @ git+https://github.com/LuGiova/zepyros.git"
+]
 
-[tool.poetry.dependencies]
-python = "^3.12"
-contourpy = "1.2.1"
-cycler = "0.12.1"
-fonttools = "4.51.0"
-kiwisolver = "1.4.5"
-matplotlib = "3.8.4"
-numpy = "1.26.4"
-packaging = "24.0"
-pandas = "2.2.2"
-pillow = "10.3.0"
-pyparsing = "3.1.2"
-python-dateutil = "2.9.0.post0"
-pytz = "2024.1"
-scipy = "1.13.0"
-seaborn = "0.12.2"
-six = "1.16.0"
-tqdm = "4.66.4"
-tzdata = "2024.1"
-zepyros = {git = "https://github.com/matmi8/zepyros.git", rev = "4e16e76941e35c402868286340475151e75a92dc"}
-
+[tool.poetry]
+package-mode = false
 
 [build-system]
-requires = ["poetry-core"]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
