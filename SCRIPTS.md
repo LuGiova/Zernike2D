@@ -142,26 +142,27 @@ The CSV now stores both the plane representation and the original matched 3D poi
 
 **Script:** `get_complementary_plane2.py`
 
-Computes a complementary plane starting from the **full molecular surface CSV files**. This script handles the binding-site extraction internally, then samples the complementary plane uniformly and computes Zernike descriptors using the plane normal as the axis.
+Computes a complementary plane starting from the **full molecular surface CSV files**. This script handles the binding-site extraction internally, then builds a circular sampling domain centered on the projected binding-site centroid and computes Zernike descriptors using the plane normal as the axis.
 
 The full workflow is:
 
 1. Read the two full surface CSV files.
 2. Convert the Cartesian coordinates to arrays and extract binding sites using the distance threshold.
 3. Keep only the points classified as binding-site points on each surface.
-4. Match the two binding-site clouds through nearest-neighbor search between the two binding-site sets.
+4. Match the two binding-site clouds through nearest-neighbor search between the two binding-site sets in both directions.
 5. Compute pairwise midpoints and fit a PCA plane to the midpoint cloud. Note: midpoints are collected from both matching directions — points in surface1 matched to their nearest on surface2 and points in surface2 matched to their nearest on surface1 — and the combined midpoint cloud is used for plane fitting.
-6. Search for a rectangular sampling grid on the fitted plane and sample that plane uniformly.
-7. Match each sampled plane cell to pairs of binding-site points.
-8. Compute physical distance and Zernike distance, using the plane normal as the Zernike axis.
-9. Export the table.
+6. Project the binding-site centroid onto the fitted plane.
+7. Build a circle centered on that projected centroid and divide it into 10 concentric rings of equal thickness.
+8. Shrink the circle radius until the outer ring contains at least 10 points for each binding site.
+9. For each ring, select up to `-n` points from binding site 1 and match them one-to-one to distinct points from binding site 2 in the same ring.
+10. For each pair, compute the intersection between the segment connecting the two points and the fitted plane, then export the resulting representative point, distances, and ring metadata.
 
-Compared to `get_complementary_plane.py`, this script differs mainly in how the interface is sampled and how Zernike is oriented. Here the plane is the sampling domain itself: the grid is built uniformly in plane coordinates, and the plane normal is used as the Zernike axis. This makes the resulting table more directly tied to the fitted complementary plane.
+Compared to `get_complementary_plane.py`, this script differs mainly in how the interface is sampled and how Zernike is oriented. Here the plane is not sampled as a rectangle anymore: the domain is a polar circle centered on the projected binding-site centroid, split into 10 rings, and the plane normal is used as the Zernike axis. This makes the resulting table more directly tied to the fitted complementary plane geometry.
 
 The two scripts are not meant to establish a "better" or "worse" method in general. They are two different ways of building a complementary plane with different input assumptions:
 
 - `get_complementary_plane.py` samples the binding site uniformly and computes Zernike with the pair direction, or optionally the surface normal.
-- `get_complementary_plane2.py` samples the fitted plane uniformly and computes Zernike with the plane normal.
+- `get_complementary_plane2.py` samples the fitted plane in polar rings and computes Zernike with the plane normal.
 
 The choice depends on whether you want the analysis anchored on the binding-site geometry itself or on the final fitted plane geometry.
 
@@ -174,7 +175,7 @@ The choice depends on whether you want the analysis anchored on the binding-site
 
 **Optional:**
 - `-t, --threshold` (float): Distance threshold in angstroms (default: 5.0)
-- `-n, --points` (int): Number of sample points (default: 100)
+- `-n, --points` (int): Number of points per ring for binding-site 1 (default: 100)
 - `--output-name` (str): Custom output file name (without extension)
 - `--verbose` (flag): Enable detailed console output
 - `-p, --plot` (flag): Generate comparison plots
@@ -189,18 +190,19 @@ python get_complementary_plane2.py -sf1 ./input_files/1a1u_A.csv -sf2 ./input_fi
 ### Output Files
 
 - `complementary_plane2.csv` (or custom name): Sampled points on fitting plane with distance metrics
-- `complementary_plane2.png`: Combined subplot visualization
+- `complementary_plane2.png`: Polar subplot visualization with 10 concentric rings
 
 ### Output CSV Columns
 
-The CSV now includes the original matched points as well as the plane coordinates:
+The CSV now includes the original matched points as well as the plane coordinates and ring metadata:
 
-`res1, res2, idx1, idx2, x1, y1, z1, x2, y2, z2, mid_x, mid_y, mid_z, plane_x, plane_y, plane_z, plane_u, plane_v, physical_distance, zernike_distance`
+`res1, res2, idx1, idx2, ring_id, ring_fraction, circle_radius, ring_width, ring_inner_radius, ring_outer_radius, x1, y1, z1, x2, y2, z2, mid_x, mid_y, mid_z, center_u, center_v, center_x, center_y, center_z, plane_x, plane_y, plane_z, plane_u, plane_v, theta, radial_distance, physical_distance, zernike_distance`
 
 ### Notes
 
 - Uses binding-site matching before fitting the plane
-- Provides a more selective interface subset than `get_complementary_plane.py`
+- Forces the selected points from binding site 1 to be paired with distinct nearest neighbors from binding site 2 inside the same ring
+- Stores the representative point as the intersection between the segment joining the two 3D points and the fitted plane
 - The additional columns make downstream analyses possible on the original 3D point pairs, not only on the plane projection
 
 ---

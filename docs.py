@@ -177,7 +177,7 @@ def build_cli_complementary_plane2():
     optional.add_argument("-n", "--points",
                           type=int,
                           default=100,
-                          help="int; number of sample points (default: 100)",
+                          help="int; number of points per ring (default: 100)",
                           metavar="")
     optional.add_argument("--output-name",
                           type=str,

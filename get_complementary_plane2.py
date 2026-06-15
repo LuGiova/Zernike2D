@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import tqdm
 import zepyros as zp
 from scipy.spatial import cKDTree
+from scipy.optimize import linear_sum_assignment
 from sklearn.decomposition import PCA
 
 
@@ -60,76 +61,6 @@ class ComplementaryPlane:
         return centroid, basis, projected, plane_u, plane_v
 
     @staticmethod
-    def build_rectangle(plane_u, plane_v):
-        umin, umax = float(np.min(plane_u)), float(np.max(plane_u))
-        vmin, vmax = float(np.min(plane_v)), float(np.max(plane_v))
-        return umin, umax, vmin, vmax
-
-    @staticmethod
-    def sample_rectangle_points(umin, umax, vmin, vmax, n_points):
-        if n_points < 1:
-            raise ValueError('points must be >= 1')
-
-        n_u = max(1, int(np.floor(np.sqrt(n_points))))
-        n_v = max(1, int(np.ceil(n_points / n_u)))
-
-        u_centers = np.linspace(umin, umax, n_u + 1)
-        v_centers = np.linspace(vmin, vmax, n_v + 1)
-        u_centers = (u_centers[:-1] + u_centers[1:]) / 2.0
-        v_centers = (v_centers[:-1] + v_centers[1:]) / 2.0
-
-        grid = np.array(np.meshgrid(u_centers, v_centers, indexing='xy')).reshape(2, -1).T
-        if len(grid) == n_points:
-            return grid
-
-        indices = np.linspace(0, len(grid) - 1, n_points, dtype=int)
-        return grid[indices]
-
-    @staticmethod
-    def build_rectangle_grid(umin, umax, vmin, vmax, n_points):
-        if n_points < 1:
-            raise ValueError('points must be >= 1')
-        # choose integer grid (n_u, n_v) such that n_u * n_v >= n_points
-        # and cells are as square as possible in (u, v) coordinates
-        width = float(umax - umin)
-        height = float(vmax - vmin)
-        if width == 0 or height == 0:
-            # degenerate: fallback to 1 x n_points
-            n_u, n_v = 1, int(np.ceil(n_points))
-        else:
-            best_pair = (1, int(np.ceil(n_points)))
-            best_cell_log_ratio = None
-            best_p = None
-            max_u = int(np.ceil(n_points))
-            for n_u in range(1, max_u + 1):
-                n_v = int(np.ceil(n_points / n_u))
-                p = n_u * n_v
-
-                cell_u = width / n_u
-                cell_v = height / n_v
-                # log-distance from 1.0 gives symmetric penalty for x and 1/x
-                cell_log_ratio = abs(np.log(cell_u / cell_v))
-
-                if (
-                    best_cell_log_ratio is None
-                    or cell_log_ratio < best_cell_log_ratio
-                    or (np.isclose(cell_log_ratio, best_cell_log_ratio) and p < best_p)
-                ):
-                    best_pair = (n_u, n_v)
-                    best_cell_log_ratio = cell_log_ratio
-                    best_p = p
-
-            n_u, n_v = best_pair
-
-        u_edges = np.linspace(umin, umax, n_u + 1)
-        v_edges = np.linspace(vmin, vmax, n_v + 1)
-        u_centers = (u_edges[:-1] + u_edges[1:]) / 2.0
-        v_centers = (v_edges[:-1] + v_edges[1:]) / 2.0
-        grid = np.array(np.meshgrid(u_centers, v_centers, indexing='xy')).reshape(2, -1).T
-
-        return grid, u_edges, v_edges, len(grid), n_u, n_v
-
-    @staticmethod
     def plane_points_to_3d(plane_uv, centroid, basis):
         return centroid + np.outer(plane_uv[:, 0], basis[0]) + np.outer(plane_uv[:, 1], basis[1])
 
@@ -144,73 +75,126 @@ class ComplementaryPlane:
         return coords, plane_coords, projected
 
     @staticmethod
-    def assign_points_to_cells(plane_coords, u_edges, v_edges):
-        u_idx = np.digitize(plane_coords[:, 0], u_edges, right=False) - 1
-        v_idx = np.digitize(plane_coords[:, 1], v_edges, right=False) - 1
-
-        u_idx = np.clip(u_idx, 0, len(u_edges) - 2)
-        v_idx = np.clip(v_idx, 0, len(v_edges) - 2)
-
-        cell_map = {}
-        for idx, cell in enumerate(zip(u_idx, v_idx)):
-            cell_map.setdefault(cell, []).append(idx)
-        return cell_map
+    def project_point_to_plane(point, centroid, basis):
+        point = np.asarray(point, dtype=float)
+        centered = point - centroid
+        plane_u = float(centered @ basis[0])
+        plane_v = float(centered @ basis[1])
+        projected = centroid + plane_u * basis[0] + plane_v * basis[1]
+        return np.array([plane_u, plane_v], dtype=float), projected
 
     @staticmethod
-    def select_cell_matches(rectangle_uv, plane_coords1, plane_coords2, coords1, coords2, u_edges, v_edges, require_both=False, return_rect_idx=False):
-        cell_map1 = ComplementaryPlane.assign_points_to_cells(plane_coords1, u_edges, v_edges)
-        cell_map2 = ComplementaryPlane.assign_points_to_cells(plane_coords2, u_edges, v_edges)
+    def segment_plane_intersection(point1, point2, plane_point, plane_normal):
+        point1 = np.asarray(point1, dtype=float)
+        point2 = np.asarray(point2, dtype=float)
+        plane_point = np.asarray(plane_point, dtype=float)
+        plane_normal = np.asarray(plane_normal, dtype=float)
 
-        chosen_idx1 = []
-        chosen_idx2 = []
-        both_count = 0
-        fallback_count = 0
-        rect_indices = []
+        direction = point2 - point1
+        denominator = float(np.dot(plane_normal, direction))
+        if np.isclose(denominator, 0.0):
+            return (point1 + point2) / 2.0
 
-        for ridx, cell_uv in enumerate(rectangle_uv):
-            u_idx = np.searchsorted(u_edges, cell_uv[0], side='right') - 1
-            v_idx = np.searchsorted(v_edges, cell_uv[1], side='right') - 1
-            u_idx = int(np.clip(u_idx, 0, len(u_edges) - 2))
-            v_idx = int(np.clip(v_idx, 0, len(v_edges) - 2))
-            cell = (u_idx, v_idx)
+        t = float(np.dot(plane_normal, plane_point - point1) / denominator)
+        return point1 + t * direction
 
-            candidates1 = cell_map1.get(cell, [])
-            candidates2 = cell_map2.get(cell, [])
+    @staticmethod
+    def build_concentric_rings(plane_coords1, plane_coords2, center_uv, n_rings=10, min_outer_points=10):
+        center_uv = np.asarray(center_uv, dtype=float)
+        radii1 = np.linalg.norm(plane_coords1 - center_uv, axis=1)
+        radii2 = np.linalg.norm(plane_coords2 - center_uv, axis=1)
 
-            if candidates1 and candidates2:
-                pair_coords1 = coords1[candidates1]
-                pair_coords2 = coords2[candidates2]
-                pair_dist = np.linalg.norm(
-                    pair_coords1[:, None, :] - pair_coords2[None, :, :],
-                    axis=2
-                )
-                best = np.unravel_index(np.argmin(pair_dist), pair_dist.shape)
-                chosen_idx1.append(candidates1[best[0]])
-                chosen_idx2.append(candidates2[best[1]])
-                rect_indices.append(ridx)
-                both_count += 1
+        max_radius = float(max(np.max(radii1), np.max(radii2)))
+        if np.isclose(max_radius, 0.0):
+            raise ValueError('Projected binding sites are degenerate in the complementary plane')
+
+        radius = max_radius
+        for _ in range(200):
+            ring_width = radius / float(n_rings)
+            if np.isclose(ring_width, 0.0):
+                break
+
+            ring_ids1 = np.full(len(radii1), -1, dtype=int)
+            ring_ids2 = np.full(len(radii2), -1, dtype=int)
+
+            inside1 = radii1 <= radius + 1e-12
+            inside2 = radii2 <= radius + 1e-12
+            ring_ids1[inside1] = np.minimum(np.floor(radii1[inside1] / ring_width).astype(int), n_rings - 1)
+            ring_ids2[inside2] = np.minimum(np.floor(radii2[inside2] / ring_width).astype(int), n_rings - 1)
+
+            outer_count1 = int(np.count_nonzero(ring_ids1 == (n_rings - 1)))
+            outer_count2 = int(np.count_nonzero(ring_ids2 == (n_rings - 1)))
+            if outer_count1 >= min_outer_points and outer_count2 >= min_outer_points:
+                return radius, ring_width, radii1, radii2, ring_ids1, ring_ids2
+
+            radius *= 0.95
+
+        raise ValueError('Unable to find a circle radius where the outer ring contains at least 10 points for both binding sites')
+
+    @staticmethod
+    def select_ring_pairs(plane_coords1, plane_coords2, coords1, coords2, center_uv, plane_point, plane_normal, basis, radius, ring_ids1, ring_ids2, points_per_ring, n_rings=10):
+        center_uv = np.asarray(center_uv, dtype=float)
+        relative1 = plane_coords1 - center_uv
+        relative2 = plane_coords2 - center_uv
+        angle1 = np.arctan2(relative1[:, 1], relative1[:, 0])
+        angle2 = np.arctan2(relative2[:, 1], relative2[:, 0])
+
+        records = []
+        for ring_id in range(n_rings):
+            indices1 = np.flatnonzero(ring_ids1 == ring_id)
+            indices2 = np.flatnonzero(ring_ids2 == ring_id)
+            if len(indices1) == 0 or len(indices2) == 0:
                 continue
 
-            if require_both:
-                # skip this cell
+            order1 = indices1[np.argsort(angle1[indices1])]
+            target_count = min(points_per_ring, len(order1), len(indices2))
+            if target_count < 1:
                 continue
 
-            # fallback: if one cell side is empty, pick the nearest projected point to the cell center on each surface
-            if not candidates1:
-                candidates1 = [int(np.argmin(np.linalg.norm(plane_coords1 - cell_uv, axis=1)))]
-            if not candidates2:
-                candidates2 = [int(np.argmin(np.linalg.norm(plane_coords2 - cell_uv, axis=1)))]
+            if len(order1) > target_count:
+                chosen1 = order1[np.linspace(0, len(order1) - 1, target_count, dtype=int)]
+            else:
+                chosen1 = order1
 
-            fallback_count += 1
-            chosen_idx1.append(candidates1[0])
-            chosen_idx2.append(candidates2[0])
-            rect_indices.append(ridx)
+            distance_matrix = np.linalg.norm(
+                plane_coords1[chosen1][:, None, :] - plane_coords2[indices2][None, :, :],
+                axis=2,
+            )
+            row_ind, col_ind = linear_sum_assignment(distance_matrix)
+            chosen1 = chosen1[row_ind]
+            chosen2 = indices2[col_ind]
 
-        out1 = np.asarray(chosen_idx1, dtype=int)
-        out2 = np.asarray(chosen_idx2, dtype=int)
-        if return_rect_idx:
-            return out1, out2, np.asarray(rect_indices, dtype=int), both_count, fallback_count
-        return out1, out2, both_count, fallback_count
+            for idx1, idx2 in zip(chosen1, chosen2):
+                proj1 = plane_coords1[idx1]
+                proj2 = plane_coords2[idx2]
+                intersection_3d = ComplementaryPlane.segment_plane_intersection(coords1[idx1], coords2[idx2], plane_point, plane_normal)
+                intersection_uv, intersection_proj = ComplementaryPlane.project_point_to_plane(intersection_3d, plane_point, basis)
+                relative_intersection = intersection_uv - center_uv
+                records.append({
+                    'idx1': int(idx1),
+                    'idx2': int(idx2),
+                    'ring_id': int(ring_id + 1),
+                    'ring_fraction': float((ring_id + 1) / n_rings),
+                    'circle_radius': float(radius),
+                    'ring_width': float(radius / float(n_rings)),
+                    'ring_inner_radius': float(ring_id * (radius / float(n_rings))),
+                    'ring_outer_radius': float((ring_id + 1) * (radius / float(n_rings))),
+                    'plane_u1': float(proj1[0]),
+                    'plane_v1': float(proj1[1]),
+                    'plane_u2': float(proj2[0]),
+                    'plane_v2': float(proj2[1]),
+                    'plane_u': float(intersection_uv[0]),
+                    'plane_v': float(intersection_uv[1]),
+                    'rep_x': float(intersection_proj[0]),
+                    'rep_y': float(intersection_proj[1]),
+                    'rep_z': float(intersection_proj[2]),
+                    'theta': float(np.arctan2(relative_intersection[1], relative_intersection[0])),
+                    'radial_distance': float(np.linalg.norm(relative_intersection)),
+                    'ring_radius1': float(np.linalg.norm(proj1 - center_uv)),
+                    'ring_radius2': float(np.linalg.norm(proj2 - center_uv)),
+                })
+
+        return pd.DataFrame.from_records(records)
 
     @staticmethod
     def get_invariants_with_axes(surface, indices, axes_vectors, verso):
@@ -237,42 +221,56 @@ class ComplementaryPlane:
         return sampled_surface, coeff_array
 
     @staticmethod
-    def plot_plane_subplots(df_plane, phys_col, zernike_col, output_file, cmap='viridis', u_edges=None, v_edges=None, n_u=None, n_v=None, phys_grid=None, zernike_grid=None):
+    def plot_plane_subplots(df_plane, phys_col, zernike_col, output_file, cmap='viridis', circle_center=None, circle_radius=None):
         """
         Create a single image with two subplots (physical and zernike), using the same
         colormap and scatter-based plotting like `get_complementary_plane.py`.
         """
-        fig, axes = plt.subplots(1, 2, figsize=(18, 8))
+        fig, axes = plt.subplots(1, 2, figsize=(18, 8), subplot_kw={'projection': 'polar'})
 
         # drop rows with NaN in the plotted columns
         dfp = df_plane.dropna(subset=[phys_col, zernike_col]).reset_index(drop=True)
 
+        if circle_center is None:
+            circle_center = np.array([dfp['center_u'].iloc[0], dfp['center_v'].iloc[0]], dtype=float)
+        else:
+            circle_center = np.asarray(circle_center, dtype=float)
+
+        if circle_radius is None:
+            circle_radius = float(dfp['circle_radius'].iloc[0])
+
+        theta = dfp['theta'].to_numpy(dtype=float)
+        radial = dfp['radial_distance'].to_numpy(dtype=float)
+        ring_ticks = np.linspace(circle_radius / 10.0, circle_radius, 10)
+        theta_ticks = np.deg2rad(np.arange(0, 360, 30))
+        theta_labels = [f'{deg}°' for deg in range(0, 360, 30)]
+        radial_labels = [''] * (len(ring_ticks) - 1) + [f'{circle_radius:.2f}']
+
+        for ax in axes:
+            ax.set_theta_zero_location('E')
+            ax.set_theta_direction(-1)
+            ax.set_rlim(0, circle_radius)
+            ax.set_rticks(ring_ticks)
+            ax.set_yticklabels(radial_labels)
+            ax.set_thetagrids(np.arange(0, 360, 30), labels=theta_labels)
+            ax.grid(True, alpha=0.35)
+            ax.set_rlabel_position(135)
+
         # physical distance subplot
         sc0 = axes[0].scatter(
-            dfp['plane_u'], dfp['plane_v'],
+            theta,
+            radial,
             c=dfp[phys_col], cmap=cmap, s=18, alpha=0.9, edgecolors='none'
         )
         axes[0].set_title('Complementary plane colored by physical distance')
-        axes[0].set_xlabel('Plane coordinate u')
-        axes[0].set_ylabel('Plane coordinate v')
-        # set equal aspect only if ranges are non-degenerate
-        umin, umax = dfp['plane_u'].min(), dfp['plane_u'].max()
-        vmin, vmax = dfp['plane_v'].min(), dfp['plane_v'].max()
-        if not np.isclose(umax - umin, 0.0) and not np.isclose(vmax - vmin, 0.0):
-            axes[0].set_aspect('equal', adjustable='box')
-        axes[0].grid(True, alpha=0.25)
 
         # zernike distance subplot
         sc1 = axes[1].scatter(
-            dfp['plane_u'], dfp['plane_v'],
+            theta,
+            radial,
             c=dfp[zernike_col], cmap=cmap, s=18, alpha=0.9, edgecolors='none'
         )
         axes[1].set_title('Complementary plane colored by Zernike distance')
-        axes[1].set_xlabel('Plane coordinate u')
-        axes[1].set_ylabel('Plane coordinate v')
-        if not np.isclose(umax - umin, 0.0) and not np.isclose(vmax - vmin, 0.0):
-            axes[1].set_aspect('equal', adjustable='box')
-        axes[1].grid(True, alpha=0.25)
 
         # colorbars (independent scales but same cmap)
         cbar0 = fig.colorbar(sc0, ax=axes[0])
@@ -298,6 +296,8 @@ class ComplementaryPlane:
 
         coords_bs1 = bs1[['x', 'y', 'z']].to_numpy(dtype=float)
         coords_bs2 = bs2[['x', 'y', 'z']].to_numpy(dtype=float)
+        combined_coords = np.vstack((coords_bs1, coords_bs2))
+        binding_site_centroid = combined_coords.mean(axis=0)
 
         print(f'Binding site points: {self.file_name1}={len(bs1)}, {self.file_name2}={len(bs2)}')
         print('Computing nearest neighbors between the two binding sites (both directions)')
@@ -318,92 +318,54 @@ class ComplementaryPlane:
         print(f'Collected midpoints: bs1->bs2={len(midpoints1)}, bs2->bs1={len(midpoints2)}, total={len(midpoints)}')
 
         centroid, basis, _, plane_u_mid, plane_v_mid = self.fit_plane(midpoints)
-        umin, umax, vmin, vmax = self.build_rectangle(plane_u_mid, plane_v_mid)
-        # iterate grids until we get at least `points` cells with both-side matches (no fallback)
-        if self.verbose:
-            print('Projecting only the binding-site surfaces on the plane and matching the sampled rectangle points')
+        plane_normal = basis[2]
+        center_uv, center_proj = self.project_point_to_plane(binding_site_centroid, centroid, basis)
         _, plane_coords1, _ = self.project_surface_to_plane(bs1, centroid, basis)
         _, plane_coords2, _ = self.project_surface_to_plane(bs2, centroid, basis)
 
-        target = self.points
-        max_product = max(10 * self.points, 2000)
-        iter_count = 0
-        chosen_rect_indices = None
-        chosen_idx1 = None
-        chosen_idx2 = None
-        while True:
-            rectangle_uv, u_edges, v_edges, actual_count, n_u, n_v = self.build_rectangle_grid(umin, umax, vmin, vmax, target)
-            rectangle_xyz = self.plane_points_to_3d(rectangle_uv, centroid, basis)
+        if self.verbose:
+            print('Projecting the binding-site centroid on the plane and building concentric rings')
 
-            out = self.select_cell_matches(
-                rectangle_uv,
-                plane_coords1,
-                plane_coords2,
-                coords_bs1,
-                coords_bs2,
-                u_edges,
-                v_edges,
-                require_both=True,
-                return_rect_idx=True,
-            )
-            idx1_tmp, idx2_tmp, rect_idx_tmp, both_count, _ = out
-
-            if self.verbose:
-                print(f'Iter {iter_count}: target={target}; grid={n_u}x{n_v} product={actual_count}; both_count={both_count}')
-
-            if both_count >= self.points:
-                # n is a minimum: keep all matched cells found at this resolution
-                keep = np.argsort(rect_idx_tmp)
-                chosen_rect_indices = rect_idx_tmp[keep]
-                chosen_idx1 = idx1_tmp[keep]
-                chosen_idx2 = idx2_tmp[keep]
-                break
-
-            # increase target and retry
-            iter_count += 1
-            if actual_count >= max_product or iter_count > 20:
-                # cannot find enough matching cells; fall back to best available (may be < points)
-                if len(rect_idx_tmp) > 0:
-                    keep = np.argsort(rect_idx_tmp)
-                    chosen_rect_indices = rect_idx_tmp[keep]
-                    chosen_idx1 = idx1_tmp[keep]
-                    chosen_idx2 = idx2_tmp[keep]
-                else:
-                    # nothing found; use original grid with fallback behavior
-                    rectangle_uv, u_edges, v_edges, actual_count, n_u, n_v = self.build_rectangle_grid(umin, umax, vmin, vmax, self.points)
-                    rectangle_xyz = self.plane_points_to_3d(rectangle_uv, centroid, basis)
-                    chosen_idx1, chosen_idx2, both_count2, fallback_count2 = self.select_cell_matches(
-                        rectangle_uv,
-                        plane_coords1,
-                        plane_coords2,
-                        coords_bs1,
-                        coords_bs2,
-                        u_edges,
-                        v_edges,
-                        require_both=False,
-                        return_rect_idx=False,
-                    )
-                    chosen_rect_indices = np.arange(len(rectangle_uv))
-                break
-
-            target = int(np.ceil(target * 1.3))
+        circle_radius, ring_width, radii1, radii2, ring_ids1, ring_ids2 = self.build_concentric_rings(
+            plane_coords1,
+            plane_coords2,
+            center_uv,
+            n_rings=10,
+            min_outer_points=10,
+        )
 
         if self.verbose:
-            print(f'Requested points: {self.points}; final grid: n_u={n_u}, n_v={n_v}, product={actual_count}; returned_cells={len(chosen_idx1)}')
+            print(f'Circle center projected at u={center_uv[0]:.6f}, v={center_uv[1]:.6f}')
+            print(f'Final circle radius={circle_radius:.6f}; ring width={ring_width:.6f}')
 
-        coords1 = coords_bs1
-        coords2 = coords_bs2
+        sampled_pairs = self.select_ring_pairs(
+            plane_coords1,
+            plane_coords2,
+            coords_bs1,
+            coords_bs2,
+            center_uv,
+            centroid,
+            plane_normal,
+            basis,
+            circle_radius,
+            ring_ids1,
+            ring_ids2,
+            self.points,
+            n_rings=10,
+        )
 
-        # idx arrays are those chosen for the matched rectangle cells
-        idx1 = np.asarray(chosen_idx1, dtype=int)
-        idx2 = np.asarray(chosen_idx2, dtype=int)
-        rect_idx = np.asarray(chosen_rect_indices, dtype=int)
-        rectangle_uv_sel = rectangle_uv[rect_idx]
-        rectangle_xyz_sel = rectangle_xyz[rect_idx]
-        physical_distance = np.linalg.norm(coords1[idx1] - coords2[idx2], axis=1)
-        midpoints_sampled = (coords1[idx1] + coords2[idx2]) / 2.0
+        if sampled_pairs.empty:
+            raise ValueError('Ring-based sampling produced no matched pairs')
 
-        plane_normal = basis[2]
+        if self.verbose:
+            ring_summary = sampled_pairs.groupby('ring_id').size().to_dict()
+            print(f'Requested points per ring: {self.points}; selected pairs per ring: {ring_summary}')
+
+        idx1 = sampled_pairs['idx1'].to_numpy(dtype=int)
+        idx2 = sampled_pairs['idx2'].to_numpy(dtype=int)
+        plane_uv_sel = sampled_pairs[['plane_u', 'plane_v']].to_numpy(dtype=float)
+        plane_xyz_sel = sampled_pairs[['rep_x', 'rep_y', 'rep_z']].to_numpy(dtype=float)
+        physical_distance = np.linalg.norm(coords_bs1[idx1] - coords_bs2[idx2], axis=1)
 
         unique_idx1, inverse_idx1 = np.unique(idx1, return_inverse=True)
         unique_idx2, inverse_idx2 = np.unique(idx2, return_inverse=True)
@@ -419,29 +381,28 @@ class ComplementaryPlane:
         zernike_distance = np.linalg.norm(coeff1 - coeff2, axis=1)
 
         print('Building output table')
-        # include original indices and coordinates so downstream smoothing can use 3D points
-        df_out = pd.DataFrame({
-            'res1': bs1.iloc[idx1]['res'].to_numpy(),
-            'res2': bs2.iloc[idx2]['res'].to_numpy(),
-            'idx1': idx1,
-            'idx2': idx2,
-            'x1': coords1[idx1][:, 0],
-            'y1': coords1[idx1][:, 1],
-            'z1': coords1[idx1][:, 2],
-            'x2': coords2[idx2][:, 0],
-            'y2': coords2[idx2][:, 1],
-            'z2': coords2[idx2][:, 2],
-            'mid_x': midpoints_sampled[:, 0],
-            'mid_y': midpoints_sampled[:, 1],
-            'mid_z': midpoints_sampled[:, 2],
-            'plane_x': rectangle_xyz_sel[:, 0],
-            'plane_y': rectangle_xyz_sel[:, 1],
-            'plane_z': rectangle_xyz_sel[:, 2],
-            'plane_u': rectangle_uv_sel[:, 0],
-            'plane_v': rectangle_uv_sel[:, 1],
-            'physical_distance': physical_distance,
-            'zernike_distance': zernike_distance,
-        })
+        df_out = sampled_pairs.copy()
+        df_out['res1'] = bs1.iloc[idx1]['res'].to_numpy()
+        df_out['res2'] = bs2.iloc[idx2]['res'].to_numpy()
+        df_out['x1'] = coords_bs1[idx1][:, 0]
+        df_out['y1'] = coords_bs1[idx1][:, 1]
+        df_out['z1'] = coords_bs1[idx1][:, 2]
+        df_out['x2'] = coords_bs2[idx2][:, 0]
+        df_out['y2'] = coords_bs2[idx2][:, 1]
+        df_out['z2'] = coords_bs2[idx2][:, 2]
+        df_out['mid_x'] = df_out['rep_x']
+        df_out['mid_y'] = df_out['rep_y']
+        df_out['mid_z'] = df_out['rep_z']
+        df_out['center_u'] = np.full(len(df_out), center_uv[0])
+        df_out['center_v'] = np.full(len(df_out), center_uv[1])
+        df_out['center_x'] = np.full(len(df_out), center_proj[0])
+        df_out['center_y'] = np.full(len(df_out), center_proj[1])
+        df_out['center_z'] = np.full(len(df_out), center_proj[2])
+        df_out['plane_x'] = plane_xyz_sel[:, 0]
+        df_out['plane_y'] = plane_xyz_sel[:, 1]
+        df_out['plane_z'] = plane_xyz_sel[:, 2]
+        df_out['physical_distance'] = physical_distance
+        df_out['zernike_distance'] = zernike_distance
 
         if self.output_name:
             output_csv = self.output_path / f'{self.output_name}.csv'
@@ -451,6 +412,8 @@ class ComplementaryPlane:
         print(f'Output saved to {output_csv}')
         print(f'Plane centroid: {centroid[0]:.6f}, {centroid[1]:.6f}, {centroid[2]:.6f}')
         print(f'Plane normal: {plane_normal[0]:.6f}, {plane_normal[1]:.6f}, {plane_normal[2]:.6f}')
+        print(f'Projected binding-site centroid on plane: {center_proj[0]:.6f}, {center_proj[1]:.6f}, {center_proj[2]:.6f}')
+        print(f'Circle radius: {circle_radius:.6f} with 10 rings of width {ring_width:.6f}')
 
         if plot:
             print('Generating plane plots')
@@ -459,7 +422,15 @@ class ComplementaryPlane:
             else:
                 combined_plot = self.output_path / f'{self.file_name1}_{self.file_name2}_plane_comparison.png'
             # Plot only matched points on the plane (no cell rendering, no black unmatched cells)
-            self.plot_plane_subplots(df_out, 'physical_distance', 'zernike_distance', combined_plot, cmap='viridis')
+            self.plot_plane_subplots(
+                df_out,
+                'physical_distance',
+                'zernike_distance',
+                combined_plot,
+                cmap='viridis',
+                circle_center=center_uv,
+                circle_radius=circle_radius,
+            )
             print(f'Combined subplot saved to {combined_plot}')
 def main():
     args = build_cli_complementary_plane2()
