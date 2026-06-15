@@ -19,7 +19,7 @@ np.seterr(divide='ignore', invalid='ignore')
 
 
 class ComplementaryPlane:
-    def __init__(self, surface_file1, surface_file2, output_path, threshold=5.0, points=100, output_name=None, verbose=False, render_plane_3d=False):
+    def __init__(self, surface_file1, surface_file2, output_path, threshold=5.0, points=100, output_name=None, verbose=False):
         self.surface1 = pd.read_csv(surface_file1).reset_index(drop=True)
         self.surface2 = pd.read_csv(surface_file2).reset_index(drop=True)
         self.file_name1 = Path(surface_file1).stem
@@ -30,7 +30,6 @@ class ComplementaryPlane:
         self.points = points
         self.output_name = output_name
         self.verbose = verbose
-        self.render_plane_3d = render_plane_3d
 
     @staticmethod
     def get_binding_sites(surface1, surface2, threshold):
@@ -293,6 +292,10 @@ class ComplementaryPlane:
         if len(bs1) < 1 or len(bs2) < 1:
             raise ValueError('Binding site extraction produced an empty surface')
 
+        # The full surfaces are no longer needed after binding-site extraction.
+        self.surface1 = None
+        self.surface2 = None
+
         coords_bs1 = bs1[['x', 'y', 'z']].to_numpy(dtype=float)
         coords_bs2 = bs2[['x', 'y', 'z']].to_numpy(dtype=float)
 
@@ -315,51 +318,15 @@ class ComplementaryPlane:
         print(f'Collected midpoints: bs1->bs2={len(midpoints1)}, bs2->bs1={len(midpoints2)}, total={len(midpoints)}')
 
         centroid, basis, _, plane_u_mid, plane_v_mid = self.fit_plane(midpoints)
-        # if requested, render only the plane and binding-site points and exit
-        if self.render_plane_3d:
-            if self.output_name:
-                out_png = self.output_path / f'{self.output_name}_3d.png'
-            else:
-                out_png = self.output_path / f'{self.file_name1}_{self.file_name2}_3d.png'
-            # binding site coords (use bs1 and bs2 computed earlier)
-            bs1_coords = bs1[['x', 'y', 'z']].to_numpy(dtype=float)
-            bs2_coords = bs2[['x', 'y', 'z']].to_numpy(dtype=float)
-            umin, umax, vmin, vmax = float(np.min(plane_u_mid)), float(np.max(plane_u_mid)), float(np.min(plane_v_mid)), float(np.max(plane_v_mid))
-            uu = np.linspace(umin, umax, 40)
-            vv = np.linspace(vmin, vmax, 40)
-            UU, VV = np.meshgrid(uu, vv)
-            uv_grid = np.column_stack((UU.ravel(), VV.ravel()))
-            XYZ = centroid + np.outer(uv_grid[:,0], basis[0]) + np.outer(uv_grid[:,1], basis[1])
-            XYZ = XYZ.reshape(UU.shape[0], UU.shape[1], 3)
-            from mpl_toolkits.mplot3d import Axes3D  # noqa
-            fig = plt.figure(figsize=(10,8))
-            ax = fig.add_subplot(111, projection='3d')
-            ax.scatter(bs1_coords[:,0], bs1_coords[:,1], bs1_coords[:,2], c='C0', s=6, label=self.file_name1)
-            ax.scatter(bs2_coords[:,0], bs2_coords[:,1], bs2_coords[:,2], c='C1', s=6, label=self.file_name2)
-            ax.plot_surface(XYZ[:,:,0], XYZ[:,:,1], XYZ[:,:,2], color='gray', alpha=0.4)
-            ax.set_title('Binding sites and fitted plane')
-            ax.legend()
-            fig.savefig(out_png, dpi=180, bbox_inches='tight')
-            plt.close(fig)
-            print(f'3D render saved to {out_png}')
-            # also export glTF
-            try:
-                save_gltf_mesh(out_png.with_suffix('.gltf'), XYZ, bs1_coords, bs2_coords)
-                print(f'3D model saved to {out_png.with_suffix('.gltf')}')
-            except Exception as e:
-                print('Failed to save glTF:', e)
-            return
-        # (render handled above) continue full computation
         umin, umax, vmin, vmax = self.build_rectangle(plane_u_mid, plane_v_mid)
         # iterate grids until we get at least `points` cells with both-side matches (no fallback)
         if self.verbose:
-            print('Projecting the full surfaces on the plane and matching the sampled rectangle points')
-        _, plane_coords1, _ = self.project_surface_to_plane(self.surface1, centroid, basis)
-        _, plane_coords2, _ = self.project_surface_to_plane(self.surface2, centroid, basis)
+            print('Projecting only the binding-site surfaces on the plane and matching the sampled rectangle points')
+        _, plane_coords1, _ = self.project_surface_to_plane(bs1, centroid, basis)
+        _, plane_coords2, _ = self.project_surface_to_plane(bs2, centroid, basis)
 
         target = self.points
         max_product = max(10 * self.points, 2000)
-        found = False
         iter_count = 0
         chosen_rect_indices = None
         chosen_idx1 = None
@@ -372,8 +339,8 @@ class ComplementaryPlane:
                 rectangle_uv,
                 plane_coords1,
                 plane_coords2,
-                self.surface1[['x', 'y', 'z']].to_numpy(dtype=float),
-                self.surface2[['x', 'y', 'z']].to_numpy(dtype=float),
+                coords_bs1,
+                coords_bs2,
                 u_edges,
                 v_edges,
                 require_both=True,
@@ -390,7 +357,6 @@ class ComplementaryPlane:
                 chosen_rect_indices = rect_idx_tmp[keep]
                 chosen_idx1 = idx1_tmp[keep]
                 chosen_idx2 = idx2_tmp[keep]
-                found = True
                 break
 
             # increase target and retry
@@ -410,8 +376,8 @@ class ComplementaryPlane:
                         rectangle_uv,
                         plane_coords1,
                         plane_coords2,
-                        self.surface1[['x', 'y', 'z']].to_numpy(dtype=float),
-                        self.surface2[['x', 'y', 'z']].to_numpy(dtype=float),
+                        coords_bs1,
+                        coords_bs2,
                         u_edges,
                         v_edges,
                         require_both=False,
@@ -425,8 +391,8 @@ class ComplementaryPlane:
         if self.verbose:
             print(f'Requested points: {self.points}; final grid: n_u={n_u}, n_v={n_v}, product={actual_count}; returned_cells={len(chosen_idx1)}')
 
-        coords1 = self.surface1[['x', 'y', 'z']].to_numpy(dtype=float)
-        coords2 = self.surface2[['x', 'y', 'z']].to_numpy(dtype=float)
+        coords1 = coords_bs1
+        coords2 = coords_bs2
 
         # idx arrays are those chosen for the matched rectangle cells
         idx1 = np.asarray(chosen_idx1, dtype=int)
@@ -438,8 +404,6 @@ class ComplementaryPlane:
         midpoints_sampled = (coords1[idx1] + coords2[idx2]) / 2.0
 
         plane_normal = basis[2]
-        axes1 = np.repeat(plane_normal[None, :], len(idx1), axis=0)
-        axes2 = np.repeat((-plane_normal)[None, :], len(idx2), axis=0)
 
         unique_idx1, inverse_idx1 = np.unique(idx1, return_inverse=True)
         unique_idx2, inverse_idx2 = np.unique(idx2, return_inverse=True)
@@ -448,8 +412,8 @@ class ComplementaryPlane:
             print(f'Matched points: {len(idx1)}')
             print(f'Unique indices used: surface1={len(unique_idx1)}, surface2={len(unique_idx2)}')
 
-        _, coeff1_unique = self.get_invariants_with_axes(self.surface1, unique_idx1.tolist(), np.repeat(plane_normal[None, :], len(unique_idx1), axis=0), verso=1)
-        _, coeff2_unique = self.get_invariants_with_axes(self.surface2, unique_idx2.tolist(), np.repeat((-plane_normal)[None, :], len(unique_idx2), axis=0), verso=-1)
+        _, coeff1_unique = self.get_invariants_with_axes(bs1, unique_idx1.tolist(), np.repeat(plane_normal[None, :], len(unique_idx1), axis=0), verso=1)
+        _, coeff2_unique = self.get_invariants_with_axes(bs2, unique_idx2.tolist(), np.repeat((-plane_normal)[None, :], len(unique_idx2), axis=0), verso=-1)
         coeff1 = coeff1_unique[inverse_idx1]
         coeff2 = coeff2_unique[inverse_idx2]
         zernike_distance = np.linalg.norm(coeff1 - coeff2, axis=1)
@@ -457,8 +421,8 @@ class ComplementaryPlane:
         print('Building output table')
         # include original indices and coordinates so downstream smoothing can use 3D points
         df_out = pd.DataFrame({
-            'res1': self.surface1.iloc[idx1]['res'].to_numpy(),
-            'res2': self.surface2.iloc[idx2]['res'].to_numpy(),
+            'res1': bs1.iloc[idx1]['res'].to_numpy(),
+            'res2': bs2.iloc[idx2]['res'].to_numpy(),
             'idx1': idx1,
             'idx2': idx2,
             'x1': coords1[idx1][:, 0],
@@ -497,85 +461,6 @@ class ComplementaryPlane:
             # Plot only matched points on the plane (no cell rendering, no black unmatched cells)
             self.plot_plane_subplots(df_out, 'physical_distance', 'zernike_distance', combined_plot, cmap='viridis')
             print(f'Combined subplot saved to {combined_plot}')
-
-
-def save_gltf_mesh(out_path, plane_xyz, pts1, pts2):
-    import json, base64
-    import numpy as _np
-    H, W, _ = plane_xyz.shape
-    verts = plane_xyz.reshape(-1, 3).astype(_np.float32)
-    idx = []
-    for i in range(H-1):
-        for j in range(W-1):
-            a = i*W + j
-            b = a + 1
-            c = a + W
-            d = c + 1
-            idx.extend([a, b, c, b, d, c])
-    indices = _np.array(idx, dtype=_np.uint32)
-
-    pts1 = _np.asarray(pts1, dtype=_np.float32)
-    pts2 = _np.asarray(pts2, dtype=_np.float32)
-
-    bin_parts = [verts.tobytes(), indices.tobytes(), pts1.tobytes(), pts2.tobytes()]
-    offsets = []
-    cur = 0
-    for p in bin_parts:
-        offsets.append(cur)
-        cur += len(p)
-    blob = b''.join(bin_parts)
-    b64 = base64.b64encode(blob).decode('ascii')
-    uri = 'data:application/octet-stream;base64,' + b64
-
-    def accessor_min_max(arr):
-        return arr.min(axis=0).tolist(), arr.max(axis=0).tolist()
-
-    gltf = {
-        'asset': {'version': '2.0'},
-        'buffers': [{'uri': uri, 'byteLength': len(blob)}],
-        'bufferViews': [],
-        'accessors': [],
-        'meshes': [],
-        'nodes': [],
-        'scenes': [{'nodes': [0]}],
-        'scene': 0,
-    }
-
-    gltf['bufferViews'].append({'buffer': 0, 'byteOffset': offsets[0], 'byteLength': len(bin_parts[0])})
-    gltf['bufferViews'].append({'buffer': 0, 'byteOffset': offsets[1], 'byteLength': len(bin_parts[1])})
-    gltf['bufferViews'].append({'buffer': 0, 'byteOffset': offsets[2], 'byteLength': len(bin_parts[2])})
-    gltf['bufferViews'].append({'buffer': 0, 'byteOffset': offsets[3], 'byteLength': len(bin_parts[3])})
-
-    vmin, vmax = accessor_min_max(verts)
-    gltf['accessors'].append({'bufferView': 0, 'byteOffset': 0, 'componentType': 5126, 'count': len(verts), 'type': 'VEC3', 'min': vmin, 'max': vmax})
-    gltf['accessors'].append({'bufferView': 1, 'byteOffset': 0, 'componentType': 5125, 'count': len(indices), 'type': 'SCALAR'})
-    p1min, p1max = accessor_min_max(pts1) if len(pts1) > 0 else ([0,0,0],[0,0,0])
-    p2min, p2max = accessor_min_max(pts2) if len(pts2) > 0 else ([0,0,0],[0,0,0])
-    gltf['accessors'].append({'bufferView': 2, 'byteOffset': 0, 'componentType': 5126, 'count': len(pts1), 'type': 'VEC3', 'min': p1min, 'max': p1max})
-    gltf['accessors'].append({'bufferView': 3, 'byteOffset': 0, 'componentType': 5126, 'count': len(pts2), 'type': 'VEC3', 'min': p2min, 'max': p2max})
-
-    # materials: 0=plane gray, 1=pts1 color (blue), 2=pts2 color (orange)
-    gltf['materials'] = [
-        # semi-transparent double-sided plane to avoid occluding the proteins
-        {'name': 'plane', 'pbrMetallicRoughness': {'baseColorFactor': [0.7, 0.7, 0.7, 0.25], 'metallicFactor': 0.0, 'roughnessFactor': 1.0}, 'alphaMode': 'BLEND', 'doubleSided': True},
-        {'name': 'surface1', 'pbrMetallicRoughness': {'baseColorFactor': [0.0, 0.447, 0.741, 1.0], 'metallicFactor': 0.0, 'roughnessFactor': 1.0}, 'emissiveFactor': [0.0, 0.447, 0.741]},
-        {'name': 'surface2', 'pbrMetallicRoughness': {'baseColorFactor': [0.85, 0.325, 0.098, 1.0], 'metallicFactor': 0.0, 'roughnessFactor': 1.0}, 'emissiveFactor': [0.85, 0.325, 0.098]},
-    ]
-
-    plane_prim = {'attributes': {'POSITION': 0}, 'indices': 1, 'mode': 4, 'material': 0}
-    pts1_prim = {'attributes': {'POSITION': 2}, 'mode': 0, 'material': 1} if len(pts1) > 0 else None
-    pts2_prim = {'attributes': {'POSITION': 3}, 'mode': 0, 'material': 2} if len(pts2) > 0 else None
-    primitives = [plane_prim]
-    if pts1_prim: primitives.append(pts1_prim)
-    if pts2_prim: primitives.append(pts2_prim)
-    gltf['meshes'].append({'primitives': primitives})
-
-    gltf['nodes'].append({'mesh': 0})
-
-    with open(out_path, 'w') as f:
-        json.dump(gltf, f)
-
-
 def main():
     args = build_cli_complementary_plane2()
     calculator = ComplementaryPlane(
@@ -586,7 +471,6 @@ def main():
         points=args.points,
         output_name=getattr(args, 'output_name', None),
         verbose=getattr(args, 'verbose', False),
-        render_plane_3d=getattr(args, 'render_plane_3d', False),
     )
     calculator.compute(plot=args.plot)
 

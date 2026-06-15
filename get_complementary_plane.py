@@ -17,7 +17,7 @@ np.seterr(divide='ignore', invalid='ignore')
 
 
 class ComplementaryPlane:
-    def __init__(self, surface_file1, surface_file2, output_path, sample_every=1, use_surface_normals=False, output_name=None, render_plane_3d=False):
+    def __init__(self, surface_file1, surface_file2, output_path, sample_every=1, use_surface_normals=False, output_name=None):
         self.surface1 = pd.read_csv(surface_file1).reset_index(drop=True)
         self.surface2 = pd.read_csv(surface_file2).reset_index(drop=True)
         self.file_name1 = Path(surface_file1).stem
@@ -27,7 +27,6 @@ class ComplementaryPlane:
         self.sample_every = sample_every
         self.use_surface_normals = use_surface_normals
         self.output_name = output_name
-        self.render_plane_3d = render_plane_3d
 
     @staticmethod
     def get_all_invariants(surface, indices, verso):
@@ -206,41 +205,6 @@ class ComplementaryPlane:
         # fit plane on the combined midpoints
         centroid, basis, projected, plane_u, plane_v = self.fit_plane(midpoints)
 
-        # if requested, render only the plane and binding-site points and exit (skip Zernike)
-        if self.render_plane_3d:
-            if self.output_name:
-                out_png = self.output_path / f'{self.output_name}_3d.png'
-            else:
-                out_png = self.output_path / f'{self.file_name1}_{self.file_name2}_3d.png'
-            # use full surfaces for 3D render
-            bs1_coords = self.surface1[['x', 'y', 'z']].to_numpy(dtype=float)
-            bs2_coords = self.surface2[['x', 'y', 'z']].to_numpy(dtype=float)
-            umin, umax, vmin, vmax = float(np.min(plane_u)), float(np.max(plane_u)), float(np.min(plane_v)), float(np.max(plane_v))
-            uu = np.linspace(umin, umax, 40)
-            vv = np.linspace(vmin, vmax, 40)
-            UU, VV = np.meshgrid(uu, vv)
-            uv_grid = np.column_stack((UU.ravel(), VV.ravel()))
-            XYZ = centroid + np.outer(uv_grid[:,0], basis[0]) + np.outer(uv_grid[:,1], basis[1])
-            XYZ = XYZ.reshape(UU.shape[0], UU.shape[1], 3)
-            from mpl_toolkits.mplot3d import Axes3D  # noqa
-            fig = plt.figure(figsize=(10,8))
-            ax = fig.add_subplot(111, projection='3d')
-            ax.scatter(bs1_coords[:,0], bs1_coords[:,1], bs1_coords[:,2], c='C0', s=2, label=self.file_name1)
-            ax.scatter(bs2_coords[:,0], bs2_coords[:,1], bs2_coords[:,2], c='C1', s=2, label=self.file_name2)
-            ax.plot_surface(XYZ[:,:,0], XYZ[:,:,1], XYZ[:,:,2], color='gray', alpha=0.4)
-            ax.set_title('Binding sites and fitted plane')
-            ax.legend()
-            fig.savefig(out_png, dpi=180, bbox_inches='tight')
-            plt.close(fig)
-            print(f'3D render saved to {out_png}')
-            # also export glTF
-            try:
-                save_gltf_mesh(out_png.with_suffix('.gltf'), XYZ, bs1_coords, bs2_coords)
-                print(f'3D model saved to {out_png.with_suffix('.gltf')}')
-            except Exception as e:
-                print('Failed to save glTF:', e)
-            return
-
         # build axes for each pair (either surface normals or connection vectors)
         if self.use_surface_normals:
             axes1 = self.surface1.loc[idx1s, ['nx', 'ny', 'nz']].to_numpy(dtype=float)
@@ -315,95 +279,6 @@ class ComplementaryPlane:
             )
             print(f'Combined subplot saved to {combined_plot}')
 
-
-def save_gltf_mesh(out_path, plane_xyz, pts1, pts2):
-    import json, base64
-    # plane_xyz: (H,W,3)
-    import numpy as _np
-    H, W, _ = plane_xyz.shape
-    verts = plane_xyz.reshape(-1, 3).astype(_np.float32)
-    # triangles
-    idx = []
-    for i in range(H-1):
-        for j in range(W-1):
-            a = i*W + j
-            b = a + 1
-            c = a + W
-            d = c + 1
-            idx.extend([a, b, c, b, d, c])
-    indices = _np.array(idx, dtype=_np.uint32)
-
-    pts1 = _np.asarray(pts1, dtype=_np.float32)
-    pts2 = _np.asarray(pts2, dtype=_np.float32)
-
-    # binary blob
-    bin_parts = [verts.tobytes(), indices.tobytes(), pts1.tobytes(), pts2.tobytes()]
-    offsets = []
-    cur = 0
-    for p in bin_parts:
-        offsets.append(cur)
-        cur += len(p)
-    blob = b''.join(bin_parts)
-    b64 = base64.b64encode(blob).decode('ascii')
-    uri = 'data:application/octet-stream;base64,' + b64
-
-    def accessor_min_max(arr):
-        return arr.min(axis=0).tolist(), arr.max(axis=0).tolist()
-
-    # build glTF
-    gltf = {
-        'asset': {'version': '2.0'},
-        'buffers': [{'uri': uri, 'byteLength': len(blob)}],
-        'bufferViews': [],
-        'accessors': [],
-        'meshes': [],
-        'nodes': [],
-        'scenes': [{'nodes': [0]}],
-        'scene': 0,
-    }
-
-    # bufferViews
-    # 0: verts
-    gltf['bufferViews'].append({'buffer': 0, 'byteOffset': offsets[0], 'byteLength': len(bin_parts[0])})
-    # 1: indices
-    gltf['bufferViews'].append({'buffer': 0, 'byteOffset': offsets[1], 'byteLength': len(bin_parts[1])})
-    # 2: pts1
-    gltf['bufferViews'].append({'buffer': 0, 'byteOffset': offsets[2], 'byteLength': len(bin_parts[2])})
-    # 3: pts2
-    gltf['bufferViews'].append({'buffer': 0, 'byteOffset': offsets[3], 'byteLength': len(bin_parts[3])})
-
-    # accessors
-    vmin, vmax = accessor_min_max(verts)
-    gltf['accessors'].append({'bufferView': 0, 'byteOffset': 0, 'componentType': 5126, 'count': len(verts), 'type': 'VEC3', 'min': vmin, 'max': vmax})
-    gltf['accessors'].append({'bufferView': 1, 'byteOffset': 0, 'componentType': 5125, 'count': len(indices), 'type': 'SCALAR'})
-    p1min, p1max = accessor_min_max(pts1) if len(pts1) > 0 else ([0,0,0],[0,0,0])
-    p2min, p2max = accessor_min_max(pts2) if len(pts2) > 0 else ([0,0,0],[0,0,0])
-    gltf['accessors'].append({'bufferView': 2, 'byteOffset': 0, 'componentType': 5126, 'count': len(pts1), 'type': 'VEC3', 'min': p1min, 'max': p1max})
-    gltf['accessors'].append({'bufferView': 3, 'byteOffset': 0, 'componentType': 5126, 'count': len(pts2), 'type': 'VEC3', 'min': p2min, 'max': p2max})
-
-    # meshes: plane
-    # materials: 0=plane gray, 1=pts1 color (blue), 2=pts2 color (orange)
-    gltf['materials'] = [
-        # make plane semi-transparent and double-sided so it doesn't occlude the point clouds
-        {'name': 'plane', 'pbrMetallicRoughness': {'baseColorFactor': [0.7, 0.7, 0.7, 0.25], 'metallicFactor': 0.0, 'roughnessFactor': 1.0}, 'alphaMode': 'BLEND', 'doubleSided': True},
-        {'name': 'surface1', 'pbrMetallicRoughness': {'baseColorFactor': [0.0, 0.447, 0.741, 1.0], 'metallicFactor': 0.0, 'roughnessFactor': 1.0}, 'emissiveFactor': [0.0, 0.447, 0.741]},
-        {'name': 'surface2', 'pbrMetallicRoughness': {'baseColorFactor': [0.85, 0.325, 0.098, 1.0], 'metallicFactor': 0.0, 'roughnessFactor': 1.0}, 'emissiveFactor': [0.85, 0.325, 0.098]},
-    ]
-
-    plane_prim = {'attributes': {'POSITION': 0}, 'indices': 1, 'mode': 4, 'material': 0}
-    pts1_prim = {'attributes': {'POSITION': 2}, 'mode': 0, 'material': 1} if len(pts1) > 0 else None
-    pts2_prim = {'attributes': {'POSITION': 3}, 'mode': 0, 'material': 2} if len(pts2) > 0 else None
-    primitives = [plane_prim]
-    if pts1_prim: primitives.append(pts1_prim)
-    if pts2_prim: primitives.append(pts2_prim)
-    gltf['meshes'].append({'primitives': primitives})
-
-    gltf['nodes'].append({'mesh': 0})
-
-    with open(out_path, 'w') as f:
-        json.dump(gltf, f)
-        
-
 def main():
     args = build_cli_complementary_plane()
     calculator = ComplementaryPlane(
@@ -412,8 +287,6 @@ def main():
         args.output,
         sample_every=args.sample_every,
         use_surface_normals=getattr(args, 'use_surface_normals', False)
-        ,
-        render_plane_3d=getattr(args, 'render_plane_3d', False)
     )
     calculator.output_name = getattr(args, 'output_name', None)
     calculator.compute(plot=args.plot)

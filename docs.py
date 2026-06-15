@@ -139,9 +139,6 @@ def build_cli_complementary_plane():
     optional.add_argument("--use-surface-normals",
                           action='store_true',
                           help="boolean; use surface normals in calculations")
-    optional.add_argument("--render-plane-3d",
-                          action='store_true',
-                          help="boolean; render 3D visualization of the plane")
     optional.add_argument("--output-name",
                           type=str,
                           help="string; custom output file name (without extension)",
@@ -189,9 +186,6 @@ def build_cli_complementary_plane2():
     optional.add_argument("--verbose",
                           action='store_true',
                           help="boolean; enable verbose output")
-    optional.add_argument("--render-plane-3d",
-                          action='store_true',
-                          help="boolean; render 3D visualization of the plane")
     optional.add_argument("-p", "--plot",
                           action='store_true',
                           help="boolean; generate plots")

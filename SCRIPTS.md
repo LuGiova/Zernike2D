@@ -105,7 +105,6 @@ Because the input is already restricted to binding-site points, this script work
 **Optional:**
 - `-s, --sample-every` (int): Sample every Nth point (default: 1)
 - `--use-surface-normals` (flag): Use surface normals in calculations
-- `--render-plane-3d` (flag): Render 3D visualization
 - `--output-name` (str): Custom output file name (without extension)
 - `-p, --plot` (flag): Generate plots
 - `-h, --help`: Show help message
@@ -113,7 +112,7 @@ Because the input is already restricted to binding-site points, this script work
 ### Usage
 
 ```bash
-python get_complementary_plane.py -sf1 ./output_files/1a1u_A_bs.csv -sf2 ./output_files/1a1u_C_bs.csv -o ./output_files/ -p --render-plane-3d
+python get_complementary_plane.py -sf1 ./output_files/1a1u_A_bs.csv -sf2 ./output_files/1a1u_C_bs.csv -o ./output_files/ -p
 ```
 
 ### Output Files
@@ -136,17 +135,6 @@ The CSV now stores both the plane representation and the original matched 3D poi
 - `plane_x,plane_y,plane_z` are the 3D coordinates obtained by projecting the midpoint back onto the plane.
 - `physical_distance` is the Euclidean distance between the two original 3D points.
 - `zernike_distance` is the distance between the corresponding Zernike descriptors.
-
-### The `--render-plane-3d` Flag
-
-When `--render-plane-3d` is enabled, the script **skips all Zernike and distance calculations** and exits after generating the 3D visualization files. This is useful for quick preview and debugging:
-
-- Zernike descriptors are **not computed**
-- Physical and Zernike distances are **not calculated**
-- No CSV file is produced
-- Only PNG and optional glTF files are generated
-
-This allows rapid visual verification of plane fitting and surface alignment without the computational cost of Zernike descriptor computation.
 
 ---
 
@@ -189,22 +177,19 @@ The choice depends on whether you want the analysis anchored on the binding-site
 - `-n, --points` (int): Number of sample points (default: 100)
 - `--output-name` (str): Custom output file name (without extension)
 - `--verbose` (flag): Enable detailed console output
-- `--render-plane-3d` (flag): Render 3D visualization and export glTF model
 - `-p, --plot` (flag): Generate comparison plots
 - `-h, --help`: Show help message
 
 ### Usage
 
 ```bash
-python get_complementary_plane2.py -sf1 ./input_files/1a1u_A.csv -sf2 ./input_files/1a1u_C.csv -o ./output_files/ -t 5.0 -n 1000 -p --output-name complementary_plane2 --verbose --render-plane-3d
+python get_complementary_plane2.py -sf1 ./input_files/1a1u_A.csv -sf2 ./input_files/1a1u_C.csv -o ./output_files/ -t 5.0 -n 1000 -p --output-name complementary_plane2 --verbose
 ```
 
 ### Output Files
 
 - `complementary_plane2.csv` (or custom name): Sampled points on fitting plane with distance metrics
 - `complementary_plane2.png`: Combined subplot visualization
-- `complementary_plane2_3d.png`: 3D rendering of surfaces and fitted plane (if `--render-plane-3d`)
-- `complementary_plane2.gltf`: 3D model in glTF 2.0 format for viewer compatibility
 
 ### Output CSV Columns
 
@@ -215,20 +200,8 @@ The CSV now includes the original matched points as well as the plane coordinate
 ### Notes
 
 - Uses binding-site matching before fitting the plane
-- Supports 3D model export (glTF format)
 - Provides a more selective interface subset than `get_complementary_plane.py`
 - The additional columns make downstream analyses possible on the original 3D point pairs, not only on the plane projection
-
-### The `--render-plane-3d` Flag
-
-When `--render-plane-3d` is enabled, the script **skips all Zernike and distance calculations** and exits after generating the 3D visualization files. This is a preview-only mode:
-
-- Zernike descriptors are **not computed**
-- Physical and Zernike distances are **not calculated**
-- No CSV file is produced
-- Only PNG and optional glTF files are generated
-
-Use this flag to quickly visualize the fitted plane and surface alignment without waiting for the expensive Zernike descriptor computation. Once you're satisfied with the plane fitting, run without the flag to generate the full analysis with all distance metrics.
 
 ---
 
@@ -379,9 +352,9 @@ python get_flatness.py -s ./input_files/1a1u_A.csv -i ./input_files/
 python get_flatness.py -s ./input_files/1a1u_C.csv -i ./input_files/
 
 # 5. Fit a complementary plane using one of the two methods
-python get_complementary_plane2.py -sf1 ./input_files/1a1u_A.csv -sf2 ./input_files/1a1u_C.csv -o ./output_files/ -t 5.0 -n 1000 -p --verbose --render-plane-3d
+python get_complementary_plane2.py -sf1 ./input_files/1a1u_A.csv -sf2 ./input_files/1a1u_C.csv -o ./output_files/ -t 5.0 -n 1000 -p --verbose
 # or
-python get_complementary_plane.py -sf1 ./input_files/1a1u_A.csv -sf2 ./input_files/1a1u_C.csv -o ./output_files/ -p --render-plane-3d
+python get_complementary_plane.py -sf1 ./input_files/1a1u_A.csv -sf2 ./input_files/1a1u_C.csv -o ./output_files/ -p
 
 # 6. Analyze interface correlation
 python analyze_interface_correlations.py -i ./output_files/complementary_plane2.csv -o ./output_files/correlation_analysis.png -r 6.0 --save-csv
