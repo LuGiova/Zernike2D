@@ -2,117 +2,57 @@
 
 **Author:** Giovanni Marzioni (Sapienza University, Matricola 2060629)  
 **Course:** Biophysics Laboratory II (Prof. Nucara) with Prof. Milanetti  
-**Date:** 2026
+## Complementary Plane 2
 
-This document describes additional scripts developed for interface analysis and surface characterization that extend the core Zernike2D protocol.
+**Script:** `get_complementary_plane2.py`
 
----
+Purpose
+ - Build a complementary plane from two full-surface CSVs, sample it in polar rings, and compare local descriptors between matched points.
 
-## Binding Sites
+Behavior (current implementation)
+ - Extracts binding sites from the two input full-surface CSV files using a distance threshold.
+ - Matches the two binding-site clouds with nearest-neighbor searches in both directions and collects midpoints.
+ - Fits a PCA plane to the combined midpoint cloud and projects the binding-site centroid onto that plane.
+ - Constructs a circular domain centered on the projected centroid and splits it into 10 concentric rings of equal thickness.
+ - Shrinks the circle radius (if needed) until the outermost ring contains at least 10 points for each binding site.
+ - For each ring, selects up to `-n` points from binding site 1 (angularly ordered) and assigns a distinct partner from binding site 2 within the same ring using the Hungarian algorithm (one-to-one matching).
+ - For each matched pair computes:
+	 - the 3D intersection between the segment joining the two original points and the fitted plane (representative point),
+	 - the representative point's projected plane coordinates (UV),
+	 - the Euclidean physical distance between the two original 3D points,
+	 - the Zernike distance between Zernike descriptors computed with the plane normal as axis.
 
-**Script:** `get_binding_site.py`
+Console output
+ - Primary: two lines printed to stdout containing comma-separated sequences of 10 numbers (rings 1..10):
+ 	 1) inverse-density-weighted mean physical distances per ring
+ 	 2) inverse-density-weighted mean Zernike distances per ring
+ - Additional informational messages (plane centroid, plane normal, projected centroid, final circle radius) are printed to stdout by the current implementation.
 
-Identifies and extracts binding site regions between two molecular surfaces. A point is considered part of a binding site if it lies within a specified distance threshold from at least one point on the other surface.
+CSV output (`--csv`)
+ - The detailed per-pair CSV is written only if the `--csv` flag is provided on the CLI.
+ - When written, the CSV begins with commented metadata lines (each starting with `#`) containing:
+	 - `center_u,center_v` (plane coordinates of projected centroid)
+	 - `center_x,center_y,center_z` (3D coords of projected centroid)
+	 - `circle_radius` and `ring_width`
+	 - `n_rings` (10)
+ - After the header comments the per-pair table is written with a single header row and one row per matched pair.
 
-### Arguments
+Per-pair CSV columns (when `--csv` is used)
+ - `res1, res2, idx1, idx2, ring_id, ring_fraction, circle_radius, ring_width, ring_inner_radius, ring_outer_radius, plane_u1, plane_v1, plane_u2, plane_v2, plane_u, plane_v, rep_x, rep_y, rep_z, theta, radial_distance, ring_radius1, ring_radius2, x1, y1, z1, x2, y2, z2, physical_distance, zernike_distance`
 
-**Required:**
-- `-sf1, --surface1` (str): Full path of the surface1 CSV file
-- `-sf2, --surface2` (str): Full path of the surface2 CSV file  
-- `-o, --output` (str): Destination folder for output files
+Files produced
+ - When `--csv` is used: `<output_name or surface1_surface2_complementary_plane.csv>` containing the commented metadata header and the per-pair table.
+ - When `-p/--plot` is used: a PNG polar plot `<output_name or surface1_surface2_plane_comparison.png>` with two subplots (physical distance and Zernike distance) using the plane-centered polar grid.
 
-**Optional:**
-- `-t, --threshold` (float): Distance threshold in angstroms (default: 5.0)
-- `-p, --plot` (flag): Generate 3D visualization plots
-- `-h, --help`: Show help message
+CLI (see `docs.py`)
+ - Required: `-sf1/--surface1`, `-sf2/--surface2`, `-o/--output`
+ - Useful options: `-t/--threshold` (float, default 5.0), `-n/--points` (int, points per ring), `--output-name` (string), `--csv` (flag to enable detailed CSV), `--verbose` (enable extra messages), `-p/--plot` (generate PNG)
 
-### Usage
-
-```bash
-python get_binding_site.py -sf1 ./input_files/1a1u_A.csv -sf2 ./input_files/1a1u_C.csv -o ./output_files/ -t 5.0 -p
-```
-
-### Output Files
-
-- `<surface1>_bs.csv`: Binding site points from surface 1
-- `<surface2>_bs.csv`: Binding site points from surface 2
-- Optional: 3D visualization plots (if `-p` flag used)
-
-### Description
-
-The script computes pairwise distances between points on two surfaces and identifies those within the threshold. The output CSV files contain columns: `res, x, y, z, nx, ny, nz` (residue, coordinates, and normal vectors).
-
----
-
-## Flatness
-
-**Script:** `get_flatness.py`
-
-Computes the flatness metric of a molecular surface using Principal Component Analysis (PCA). Flatness characterizes the surface topology by measuring variation in the z-direction relative to the x-y plane.
-
-### Arguments
-
-**Required:**
-- `-s, --surface` (str): CSV file name (e.g., `1a1u_A_bs.csv`)
-- `-i, --input` (str): Input path folder with surface file
-
-**Optional:**
-- `-h, --help`: Show help message
-
-### Usage
-
-```bash
-python get_flatness.py -s 1a1u_A_bs.csv -i ./output_files/
-```
-
-### Output
-
-Console output of:
-- PC1, PC2, PC3 (eigenvalues from PCA decomposition)
-- Flatness coefficient
-
-### Description
-
-The script performs PCA on surface coordinates to determine principal axes. The flatness metric is computed as the ratio of the smallest to largest eigenvalue, providing a measure of how flat the surface is relative to its extent.
-
----
-
-## Complementary Plane
-
-**Script:** `get_complementary_plane.py`
-
-Computes a complementary plane starting from two **binding-site CSV files** already produced upstream by `get_binding_site.py`. This script is therefore not responsible for detecting the interface: it assumes the user has already extracted the relevant binding-site points and wants to build a plane from that reduced representation.
-
-The full workflow is:
-
-1. Read the two binding-site CSV files.
-2. Sample the first binding-site surface uniformly at the requested stride (`--sample-every`).
-3. For each sampled point, find the nearest point on the other binding-site surface. Repeat the sampling in the opposite direction (sample the second binding-site surface and find nearest points on the first). If inverse matching produces additional unique pairs, include them as well.
-4. Build the midpoint for each matched pair (including the extra inverse pairs).
-5. Fit a PCA plane to the midpoint cloud.
-6. Use the pair direction as the Zernike axis for each sampled point, or optionally the local surface normal when `--use-surface-normals` is enabled.
-7. Project the matched pairs and the plane coordinates for downstream distance analysis.
-
-Because the input is already restricted to binding-site points, this script works on a preselected interface patch. Its defining feature is the way it samples the binding site and how it orients Zernike computation: the local interaction direction comes from the matched pair itself, unless the user asks to use the surface normals instead.
-
-### Arguments
-
-**Required:**
-- `-sf1, --surface1` (str): Full path of the surface1 CSV file
-- `-sf2, --surface2` (str): Full path of the surface2 CSV file
-- `-o, --output` (str): Destination folder for output files
-
-**Optional:**
-- `-s, --sample-every` (int): Sample every Nth point (default: 1)
-- `--use-surface-normals` (flag): Use surface normals in calculations
-- `--output-name` (str): Custom output file name (without extension)
-- `-p, --plot` (flag): Generate plots
-- `-h, --help`: Show help message
-
-### Usage
-
-```bash
-python get_complementary_plane.py -sf1 ./output_files/1a1u_A_bs.csv -sf2 ./output_files/1a1u_C_bs.csv -o ./output_files/ -p
+Notes and considerations
+ - The per-ring summary is computed with inverse-density weights from a 2D KDE on the ring coordinates, so crowded regions contribute less than sparse regions.
+ - The script writes the summary CSV by default and will also print other informational messages; use `--csv` to persist the detailed per-pair table with metadata. `--verbose` increases console verbosity.
+ - The CSV includes per-pair representative coordinates (`rep_x/rep_y/rep_z`) and projected UV coordinates for both original points and intersections; these are provided to enable downstream analyses without re-projecting data.
+ - If you prefer different behavior (for example: suppressing informational prints unless `--verbose` is set, renaming `rep_*` to `intersection_*`, or producing a compact CSV), say which change you want and I will apply it.
 ```
 
 ### Output Files
@@ -142,29 +82,24 @@ The CSV now stores both the plane representation and the original matched 3D poi
 
 **Script:** `get_complementary_plane2.py`
 
-Computes a complementary plane starting from the **full molecular surface CSV files**. This script handles the binding-site extraction internally, then builds a circular sampling domain centered on the projected binding-site centroid and computes Zernike descriptors using the plane normal as the axis.
+Builds a complementary plane starting from either full-surface CSV files or PDB files. If the inputs are CSVs, they are used directly. If the inputs are PDBs, the script computes the molecular surface in memory using `dms`, then continues from the generated surface data without keeping a user-facing intermediate surface file.
 
 The full workflow is:
 
-1. Read the two full surface CSV files.
-2. Convert the Cartesian coordinates to arrays and extract binding sites using the distance threshold.
-3. Keep only the points classified as binding-site points on each surface.
-4. Match the two binding-site clouds through nearest-neighbor search between the two binding-site sets in both directions.
-5. Compute pairwise midpoints and fit a PCA plane to the midpoint cloud. Note: midpoints are collected from both matching directions — points in surface1 matched to their nearest on surface2 and points in surface2 matched to their nearest on surface1 — and the combined midpoint cloud is used for plane fitting.
-6. Project the binding-site centroid onto the fitted plane.
-7. Build a circle centered on that projected centroid and divide it into 10 concentric rings of equal thickness.
-8. Shrink the circle radius until the outer ring contains at least 10 points for each binding site.
-9. For each ring, select up to `-n` points from binding site 1 and match them one-to-one to distinct points from binding site 2 in the same ring.
-10. For each pair, compute the intersection between the segment connecting the two points and the fitted plane, then export the resulting representative point, distances, and ring metadata.
+1. Detect whether each input is a surface CSV or a PDB file.
+2. If an input is a PDB, compute its molecular surface with `dms` and use the resulting surface points in memory.
+3. If an input is a PDB, compute its radius of gyration before the binding-site analysis.
+4. Extract the binding sites from the two surface sets using the distance threshold.
+5. Compute the flatness of each binding site after extraction.
+6. Match the two binding-site clouds through nearest-neighbor search between the two binding-site sets in both directions.
+7. Compute pairwise midpoints and fit a PCA plane to the midpoint cloud. The combined midpoint cloud from both matching directions is used for plane fitting.
+8. Project the binding-site centroid onto the fitted plane.
+9. Build a circle centered on that projected centroid and divide it into 10 concentric rings of equal thickness.
+10. Shrink the circle radius until the outer ring contains at least 10 points for each binding site.
+11. For each ring, select up to `-n` points from binding site 1 and match them one-to-one to distinct points from binding site 2 in the same ring.
+12. For each pair, compute the intersection between the segment connecting the two points and the fitted plane, then export the representative point and the distance descriptors.
 
-Compared to `get_complementary_plane.py`, this script differs mainly in how the interface is sampled and how Zernike is oriented. Here the plane is not sampled as a rectangle anymore: the domain is a polar circle centered on the projected binding-site centroid, split into 10 rings, and the plane normal is used as the Zernike axis. This makes the resulting table more directly tied to the fitted complementary plane geometry.
-
-The two scripts are not meant to establish a "better" or "worse" method in general. They are two different ways of building a complementary plane with different input assumptions:
-
-- `get_complementary_plane.py` samples the binding site uniformly and computes Zernike with the pair direction, or optionally the surface normal.
-- `get_complementary_plane2.py` samples the fitted plane in polar rings and computes Zernike with the plane normal.
-
-The choice depends on whether you want the analysis anchored on the binding-site geometry itself or on the final fitted plane geometry.
+Compared to `get_complementary_plane.py`, this script samples the fitted plane in polar rings and uses the plane normal as the Zernike axis. The resulting output is split into two files: a detailed per-pair CSV that is written only when `--csv` is used, and a summary CSV that is always written.
 
 ### Arguments
 
@@ -189,21 +124,26 @@ python get_complementary_plane2.py -sf1 ./input_files/1a1u_A.csv -sf2 ./input_fi
 
 ### Output Files
 
-- `complementary_plane2.csv` (or custom name): Sampled points on fitting plane with distance metrics
-- `complementary_plane2.png`: Polar subplot visualization with 10 concentric rings
+- `<output_name or surface1_surface2>_summary.csv`: always written; contains two rows (`weighted` and `normal`) with per-ring summary statistics and global metrics
+- `<output_name or surface1_surface2>_complementary_plane.csv` (only with `--csv`): detailed per-pair table with metadata comments at the top
+- `<output_name or surface1_surface2>_plane_comparison.png` (only with `-p/--plot`): polar subplot visualization with 10 concentric rings
+
+The summary CSV contains, in order, the per-ring physical and Zernike statistics for rings 1..10, then the global metrics (`gyration_radius`, `flatness`, `roughness`, `roughness_uncertainty`, `scalar_prod`, `scalar_prod_uncertainty`) and a `summary_type` column identifying the weighted or normal row. The weighted row uses inverse-density weights from a 2D KDE on the ring coordinates; the normal row uses the usual arithmetic mean and standard error.
 
 ### Output CSV Columns
 
-The CSV now includes the original matched points as well as the plane coordinates and ring metadata:
+The detailed CSV written with `--csv` contains exactly these columns:
 
-`res1, res2, idx1, idx2, ring_id, ring_fraction, circle_radius, ring_width, ring_inner_radius, ring_outer_radius, x1, y1, z1, x2, y2, z2, mid_x, mid_y, mid_z, center_u, center_v, center_x, center_y, center_z, plane_x, plane_y, plane_z, plane_u, plane_v, theta, radial_distance, physical_distance, zernike_distance`
+`idx1, res1, x1, y1, z1, idx2, res2, x2, y2, z2, ring_id, plane_u1, plane_v1, plane_u2, plane_v2, rep_x, rep_y, rep_z, scalar_prod, PC3, physical_distance, zernike_distance`
 
 ### Notes
 
-- Uses binding-site matching before fitting the plane
-- Forces the selected points from binding site 1 to be paired with distinct nearest neighbors from binding site 2 inside the same ring
-- Stores the representative point as the intersection between the segment joining the two 3D points and the fitted plane
-- The additional columns make downstream analyses possible on the original 3D point pairs, not only on the plane projection
+- The summary CSV always includes the weighted and normal rows.
+- `gyration_radius` is populated when the input is a PDB; for CSV inputs it is written as unavailable.
+- `flatness` is computed after binding-site extraction.
+- `PC3` is the mean of the absolute third Zernike coefficient of the two paired points.
+- `scalar_prod` is the dot product between the two surface normals at the paired points.
+- The representative point is the intersection between the segment joining the two 3D points and the fitted plane.
 
 ---
 

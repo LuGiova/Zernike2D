@@ -186,6 +186,9 @@ def build_cli_complementary_plane2():
     optional.add_argument("--verbose",
                           action='store_true',
                           help="boolean; enable verbose output")
+    optional.add_argument("--csv",
+                          action='store_true',
+                          help="boolean; save detailed complementary CSV (default: False)")
     optional.add_argument("-p", "--plot",
                           action='store_true',
                           help="boolean; generate plots")
