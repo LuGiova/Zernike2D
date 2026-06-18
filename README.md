@@ -167,3 +167,6 @@ url = {https://www.sciencedirect.com/science/article/pii/S2001037020305183},
 author = {Edoardo Milanetti and Mattia Miotto and Lorenzo {Di Rienzo} and Michele Monti and Giorgio Gosti and Giancarlo Ruocco}
 }
 ```
+
+## Credits
+Several helper routines in this repository are adapted from the original project scripts and should be credited to the original authors of the Zernike2D workflow and related utilities, especially the code paths that originated in `get_binding_propensity.py`, `get_molecular_surface.py`, and `get_zernike2d_invariants.py`.

@@ -1,22 +1,28 @@
 import numpy as np
 import pandas as pd
-import subprocess
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 import tqdm
 import zepyros as zp
 from scipy.spatial import cKDTree
-from scipy.optimize import linear_sum_assignment
-from scipy.stats import gaussian_kde
-from sklearn.decomposition import PCA
 
-
-from docs import build_cli_complementary_plane2
-from get_binding_site import BindingSite
+from binding_site_utils import get_binding_site_mask
+from complementary_plane_cli import build_cli_complementary_plane2
+from plane_geometry import (
+    build_concentric_rings,
+    fit_plane,
+    normal_stats,
+    project_point_to_plane,
+    project_surface_to_plane,
+    select_ring_pairs,
+    weighted_stats,
+)
+from plane_plotting import plot_plane_subplots
+from surface_processing import (
+    calculate_flatness,
+    calculate_gyration_radius,
+    load_surface_input,
+)
 
 
 np.seterr(divide='ignore', invalid='ignore')
@@ -34,320 +40,24 @@ class ComplementaryPlane:
         self.points = points
         self.output_name = output_name
         self.verbose = verbose
-        self.surface1, self.surface1_info = self._load_surface_input(self.surface_file1)
-        self.surface2, self.surface2_info = self._load_surface_input(self.surface_file2)
-
-    @staticmethod
-    def _read_pdb_atoms(pdb_path):
-        atoms_data = []
-        with open(pdb_path, 'r') as file:
-            for line in file:
-                if line.startswith('ATOM') or line.startswith('HETATM'):
-                    try:
-                        atom_name = line[12:16].strip()
-                        x = float(line[30:38].strip())
-                        y = float(line[38:46].strip())
-                        z = float(line[46:54].strip())
-                        atoms_data.append({'atom': atom_name, 'x': x, 'y': y, 'z': z})
-                    except (ValueError, IndexError):
-                        continue
-        return pd.DataFrame(atoms_data)
-
-    @staticmethod
-    def _parse_dms_surface(dms_path):
-        colnames = [character for character in ComplementaryPlane.range_char('A', 'K')]
-        dms_surf = pd.read_csv(dms_path, names=colnames, header=None, delimiter=r'\s+')
-
-        df = (dms_surf
-              .replace(r'[^\w\s]|_', '', regex=True)
-              .assign(res=np.where(
-                  dms_surf['B'].astype(str).str[-1].str.isnumeric(),
-                  dms_surf['A'].astype(str) + '_' +
-                  dms_surf['B'].astype(str) + '_' +
-                  dms_surf['C'].astype(str),
-                  dms_surf['A'].astype(str) + '_' +
-                  (dms_surf['B'].astype(str).str
-                   .extract(r'(\d+\.?\d*)([A-Za-z]*)', expand=True)
-                   .agg('_'.join, axis=1)) + '_' +
-                  dms_surf['C'])
-              )
-              .query('G.str[0] == "S"')
-              .filter(items=['res', 'D', 'E', 'F', 'I', 'J', 'K'])
-              .set_axis(['res', 'x', 'y', 'z', 'nx', 'ny', 'nz'], axis=1)
-              .reset_index(drop=True))
-        return df
-
-    @staticmethod
-    def range_char(start, stop):
-        return (chr(n) for n in range(ord(start), ord(stop) + 1))
-
-    @staticmethod
-    def _calculate_gyration_radius(coords):
-        coords = np.asarray(coords, dtype=float)
-        if coords.shape[0] == 0:
-            return np.nan
-        center_of_mass = np.mean(coords, axis=0)
-        squared_distances = np.sum((coords - center_of_mass) ** 2, axis=1)
-        return float(np.sqrt(np.mean(squared_distances)))
-
-    @staticmethod
-    def _calculate_flatness(coords):
-        coords = np.asarray(coords, dtype=float)
-        if coords.shape[0] < 3:
-            return np.nan
-        pca = PCA(n_components=3)
-        pca.fit(coords)
-        eigenvalues = pca.explained_variance_
-        if np.isclose(eigenvalues[0], 0.0) or np.isclose(eigenvalues[1], 0.0):
-            return np.nan
-        return float(((eigenvalues[2] / eigenvalues[0]) + (eigenvalues[2] / eigenvalues[1])) / 2.0)
-
-
-
-    def _load_surface_input(self, input_path):
-        input_path = Path(input_path)
-        suffix = input_path.suffix.lower()
-        if suffix == '.csv':
-            return pd.read_csv(input_path).reset_index(drop=True), {'kind': 'csv', 'gyration_radius': np.nan, 'gyration_radius_note': 'csv_input'}
-        if suffix == '.pdb':
-            with TemporaryDirectory() as tmpdir:
-                tmpdir = Path(tmpdir)
-                dms_output = tmpdir / f'{input_path.stem}.dms'
-                run_dms = ['dms', str(input_path), '-n', '-o', str(dms_output)]
-                subprocess.run(run_dms, check=True)
-
-                with open(dms_output, 'r') as file:
-                    file_lines = [f'{x[:14]} {x[14:]}' for x in file.readlines()]
-                with open(dms_output, 'w') as file:
-                    file.writelines(file_lines)
-
-                surface = self._parse_dms_surface(dms_output)
-            atoms = self._read_pdb_atoms(input_path)
-            gyration_radius = self._calculate_gyration_radius(atoms[['x', 'y', 'z']].to_numpy(dtype=float))
-            return surface, {'kind': 'pdb', 'gyration_radius': gyration_radius, 'gyration_radius_note': 'pdb_input'}
-
-        raise ValueError(f'Unsupported input file type: {input_path.suffix}')
-
-    @staticmethod
-    def _calculate_gyration_radius(coords):
-        coords = np.asarray(coords, dtype=float)
-        if coords.shape[0] == 0:
-            return float('nan')
-        center_of_mass = np.mean(coords, axis=0)
-        squared_distances = np.sum((coords - center_of_mass) ** 2, axis=1)
-        return float(np.sqrt(np.mean(squared_distances)))
-
-
-
-    @staticmethod
-    def _normal_stats(values):
-        values = np.asarray(values, dtype=float)
-        if len(values) == 0:
-            return float('nan'), float('nan')
-        mean_value = float(np.mean(values))
-        if len(values) == 1:
-            return mean_value, 0.0
-        uncertainty = float(np.std(values, ddof=1) / np.sqrt(len(values)))
-        return mean_value, uncertainty
-
-    @staticmethod
-    def _weighted_stats(values, plane_coords):
-        values = np.asarray(values, dtype=float)
-        plane_coords = np.asarray(plane_coords, dtype=float)
-
-        if len(values) == 0:
-            return float('nan'), float('nan')
-        if len(values) < 3:
-            return ComplementaryPlane._normal_stats(values)
-
-        try:
-            kde = gaussian_kde(plane_coords.T)
-            density = kde(plane_coords.T)
-        except (np.linalg.LinAlgError, ValueError):
-            return ComplementaryPlane._normal_stats(values)
-
-        density = np.asarray(density, dtype=float)
-        if not np.all(np.isfinite(density)) or np.allclose(density, 0.0):
-            return ComplementaryPlane._normal_stats(values)
-
-        weights = 1.0 / (density + np.finfo(float).eps)
-        weight_sum = float(np.sum(weights))
-        if np.isclose(weight_sum, 0.0):
-            return ComplementaryPlane._normal_stats(values)
-
-        weights = weights / weight_sum
-        weighted_mean = float(np.sum(weights * values))
-        sum_w2 = float(np.sum(weights ** 2))
-        effective_n = (1.0 / sum_w2) if not np.isclose(sum_w2, 0.0) else float(len(values))
-        variance = float(np.sum(weights * (values - weighted_mean) ** 2))
-        uncertainty = float(np.sqrt(variance / effective_n)) if effective_n > 0 else float('nan')
-        return weighted_mean, uncertainty
+        self.surface1, self.surface1_info = load_surface_input(self.surface_file1)
+        self.surface2, self.surface2_info = load_surface_input(self.surface_file2)
 
     @staticmethod
     def get_binding_sites(surface1, surface2, threshold):
         coords1 = surface1[['x', 'y', 'z']].to_numpy(dtype=float)
         coords2 = surface2[['x', 'y', 'z']].to_numpy(dtype=float)
 
-        mask1, _ = BindingSite.get_binding_site_mask(coords1, coords2, threshold)
-        mask2, _ = BindingSite.get_binding_site_mask(coords2, coords1, threshold)
+        mask1, _ = get_binding_site_mask(coords1, coords2, threshold)
+        mask2, _ = get_binding_site_mask(coords2, coords1, threshold)
 
         return surface1[mask1 == 1].reset_index(drop=True), surface2[mask2 == 1].reset_index(drop=True)
 
     @staticmethod
-    def fit_plane(midpoints):
-        if len(midpoints) < 3:
-            raise ValueError('At least 3 midpoint points are required to fit a plane')
-
-        print(f'Fitting plane to {len(midpoints)} midpoint points')
-        pca = PCA(n_components=3)
-        pca.fit(midpoints)
-        centroid = pca.mean_
-        basis = pca.components_
-
-        centered = midpoints - centroid
-        plane_u = centered @ basis[0]
-        plane_v = centered @ basis[1]
-        projected = centroid + np.outer(plane_u, basis[0]) + np.outer(plane_v, basis[1])
-
-        return centroid, basis, projected, plane_u, plane_v
-
-
-
-    @staticmethod
-    def project_surface_to_plane(surface, centroid, basis):
-        coords = surface[['x', 'y', 'z']].to_numpy(dtype=float)
-        centered = coords - centroid
-        plane_u = centered @ basis[0]
-        plane_v = centered @ basis[1]
-        plane_coords = np.column_stack((plane_u, plane_v))
-        projected = centroid + np.outer(plane_u, basis[0]) + np.outer(plane_v, basis[1])
-        return coords, plane_coords, projected
-
-    @staticmethod
-    def project_point_to_plane(point, centroid, basis):
-        point = np.asarray(point, dtype=float)
-        centered = point - centroid
-        plane_u = float(centered @ basis[0])
-        plane_v = float(centered @ basis[1])
-        projected = centroid + plane_u * basis[0] + plane_v * basis[1]
-        return np.array([plane_u, plane_v], dtype=float), projected
-
-    @staticmethod
-    def segment_plane_intersection(point1, point2, plane_point, plane_normal):
-        point1 = np.asarray(point1, dtype=float)
-        point2 = np.asarray(point2, dtype=float)
-        plane_point = np.asarray(plane_point, dtype=float)
-        plane_normal = np.asarray(plane_normal, dtype=float)
-
-        direction = point2 - point1
-        denominator = float(np.dot(plane_normal, direction))
-        if np.isclose(denominator, 0.0):
-            return (point1 + point2) / 2.0
-
-        t = float(np.dot(plane_normal, plane_point - point1) / denominator)
-        return point1 + t * direction
-
-    @staticmethod
-    def build_concentric_rings(plane_coords1, plane_coords2, center_uv, n_rings=10, min_outer_points=10):
-        center_uv = np.asarray(center_uv, dtype=float)
-        radii1 = np.linalg.norm(plane_coords1 - center_uv, axis=1)
-        radii2 = np.linalg.norm(plane_coords2 - center_uv, axis=1)
-
-        max_radius = float(max(np.max(radii1), np.max(radii2)))
-        if np.isclose(max_radius, 0.0):
-            raise ValueError('Projected binding sites are degenerate in the complementary plane')
-
-        radius = max_radius
-        for _ in range(200):
-            ring_width = radius / float(n_rings)
-            if np.isclose(ring_width, 0.0):
-                break
-
-            ring_ids1 = np.full(len(radii1), -1, dtype=int)
-            ring_ids2 = np.full(len(radii2), -1, dtype=int)
-
-            inside1 = radii1 <= radius + 1e-12
-            inside2 = radii2 <= radius + 1e-12
-            ring_ids1[inside1] = np.minimum(np.floor(radii1[inside1] / ring_width).astype(int), n_rings - 1)
-            ring_ids2[inside2] = np.minimum(np.floor(radii2[inside2] / ring_width).astype(int), n_rings - 1)
-
-            outer_count1 = int(np.count_nonzero(ring_ids1 == (n_rings - 1)))
-            outer_count2 = int(np.count_nonzero(ring_ids2 == (n_rings - 1)))
-            if outer_count1 >= min_outer_points and outer_count2 >= min_outer_points:
-                return radius, ring_width, radii1, radii2, ring_ids1, ring_ids2
-
-            radius *= 0.95
-
-        raise ValueError('Unable to find a circle radius where the outer ring contains at least 10 points for both binding sites')
-
-    @staticmethod
-    def select_ring_pairs(plane_coords1, plane_coords2, coords1, coords2, center_uv, plane_point, plane_normal, basis, radius, ring_ids1, ring_ids2, points_per_ring, n_rings=10):
-        center_uv = np.asarray(center_uv, dtype=float)
-        relative1 = plane_coords1 - center_uv
-        relative2 = plane_coords2 - center_uv
-        angle1 = np.arctan2(relative1[:, 1], relative1[:, 0])
-        angle2 = np.arctan2(relative2[:, 1], relative2[:, 0])
-
-        records = []
-        for ring_id in range(n_rings):
-            indices1 = np.flatnonzero(ring_ids1 == ring_id)
-            indices2 = np.flatnonzero(ring_ids2 == ring_id)
-            if len(indices1) == 0 or len(indices2) == 0:
-                continue
-
-            order1 = indices1[np.argsort(angle1[indices1])]
-            target_count = min(points_per_ring, len(order1), len(indices2))
-            if target_count < 1:
-                continue
-
-            if len(order1) > target_count:
-                chosen1 = order1[np.linspace(0, len(order1) - 1, target_count, dtype=int)]
-            else:
-                chosen1 = order1
-
-            distance_matrix = np.linalg.norm(
-                plane_coords1[chosen1][:, None, :] - plane_coords2[indices2][None, :, :],
-                axis=2,
-            )
-            row_ind, col_ind = linear_sum_assignment(distance_matrix)
-            chosen1 = chosen1[row_ind]
-            chosen2 = indices2[col_ind]
-
-            for idx1, idx2 in zip(chosen1, chosen2):
-                proj1 = plane_coords1[idx1]
-                proj2 = plane_coords2[idx2]
-                intersection_3d = ComplementaryPlane.segment_plane_intersection(coords1[idx1], coords2[idx2], plane_point, plane_normal)
-                intersection_uv, intersection_proj = ComplementaryPlane.project_point_to_plane(intersection_3d, plane_point, basis)
-                relative_intersection = intersection_uv - center_uv
-                records.append({
-                    'idx1': int(idx1),
-                    'idx2': int(idx2),
-                    'ring_id': int(ring_id + 1),
-                    'ring_fraction': float((ring_id + 1) / n_rings),
-                    'circle_radius': float(radius),
-                    'ring_width': float(radius / float(n_rings)),
-                    'ring_inner_radius': float(ring_id * (radius / float(n_rings))),
-                    'ring_outer_radius': float((ring_id + 1) * (radius / float(n_rings))),
-                    'plane_u1': float(proj1[0]),
-                    'plane_v1': float(proj1[1]),
-                    'plane_u2': float(proj2[0]),
-                    'plane_v2': float(proj2[1]),
-                    'plane_u': float(intersection_uv[0]),
-                    'plane_v': float(intersection_uv[1]),
-                    'rep_x': float(intersection_proj[0]),
-                    'rep_y': float(intersection_proj[1]),
-                    'rep_z': float(intersection_proj[2]),
-                    'theta': float(np.arctan2(relative_intersection[1], relative_intersection[0])),
-                    'radial_distance': float(np.linalg.norm(relative_intersection)),
-                    'ring_radius1': float(np.linalg.norm(proj1 - center_uv)),
-                    'ring_radius2': float(np.linalg.norm(proj2 - center_uv)),
-                })
-
-        return pd.DataFrame.from_records(records)
-
-
-
-    @staticmethod
+    # Adapted from get_zernike2d_invariants.py in the original Zernike2D workflow
+    # by Edoardo Milanetti, Mattia Miotto, Lorenzo Di Rienzo, Michele Monti,
+    # Giorgio Gosti, and Giancarlo Ruocco.
+    # Source repository: https://github.com/matmi8/Zernike2D.git
     def get_invariants_with_axes(surface, indices, axes_vectors, verso):
         coeff_array = np.zeros((len(indices), 121))
         sampled_surface = surface.iloc[indices].reset_index(drop=True)
@@ -370,88 +80,6 @@ class ComplementaryPlane:
 
         print('Finished Zernike descriptors with custom axes')
         return sampled_surface, coeff_array
-
-    @staticmethod
-    def plot_plane_subplots(df_plane, phys_col, zernike_col, output_file, cmap='viridis', circle_center=None, circle_radius=None):
-        """
-        Create a single image with two subplots (physical and zernike), using the same
-        colormap and scatter-based plotting like `get_complementary_plane.py`.
-        """
-        fig, axes = plt.subplots(1, 2, figsize=(18, 8), subplot_kw={'projection': 'polar'})
-
-        # drop rows with NaN in the plotted columns
-        dfp = df_plane.dropna(subset=[phys_col, zernike_col]).reset_index(drop=True)
-
-        if 'theta' in dfp.columns and 'radial_distance' in dfp.columns:
-            theta = dfp['theta'].to_numpy(dtype=float)
-            radial = dfp['radial_distance'].to_numpy(dtype=float)
-        else:
-            if {'plane_u', 'plane_v'}.issubset(dfp.columns):
-                plane_u = dfp['plane_u'].to_numpy(dtype=float)
-                plane_v = dfp['plane_v'].to_numpy(dtype=float)
-            else:
-                plane_u = dfp['plane_u1'].to_numpy(dtype=float)
-                plane_v = dfp['plane_v1'].to_numpy(dtype=float)
-
-            if circle_center is None:
-                if {'center_u', 'center_v'}.issubset(dfp.columns):
-                    circle_center = np.array([dfp['center_u'].iloc[0], dfp['center_v'].iloc[0]], dtype=float)
-                else:
-                    circle_center = np.array([0.0, 0.0], dtype=float)
-            else:
-                circle_center = np.asarray(circle_center, dtype=float)
-
-            theta = np.arctan2(plane_v - circle_center[1], plane_u - circle_center[0])
-            radial = np.hypot(plane_u - circle_center[0], plane_v - circle_center[1])
-
-        if circle_center is None:
-            circle_center = np.array([dfp['center_u'].iloc[0], dfp['center_v'].iloc[0]], dtype=float)
-        else:
-            circle_center = np.asarray(circle_center, dtype=float)
-
-        if circle_radius is None:
-            circle_radius = float(dfp['circle_radius'].iloc[0])
-
-        ring_ticks = np.linspace(circle_radius / 10.0, circle_radius, 10)
-        theta_ticks = np.deg2rad(np.arange(0, 360, 30))
-        theta_labels = [f'{deg}°' for deg in range(0, 360, 30)]
-        radial_labels = [''] * (len(ring_ticks) - 1) + [f'{circle_radius:.2f}']
-
-        for ax in axes:
-            ax.set_theta_zero_location('E')
-            ax.set_theta_direction(-1)
-            ax.set_rlim(0, circle_radius)
-            ax.set_rticks(ring_ticks)
-            ax.set_yticklabels(radial_labels)
-            ax.set_thetagrids(np.arange(0, 360, 30), labels=theta_labels)
-            ax.grid(True, alpha=0.35)
-            ax.set_rlabel_position(135)
-
-        # physical distance subplot
-        sc0 = axes[0].scatter(
-            theta,
-            radial,
-            c=dfp[phys_col], cmap=cmap, s=18, alpha=0.9, edgecolors='none'
-        )
-        axes[0].set_title('Complementary plane colored by physical distance')
-
-        # zernike distance subplot
-        sc1 = axes[1].scatter(
-            theta,
-            radial,
-            c=dfp[zernike_col], cmap=cmap, s=18, alpha=0.9, edgecolors='none'
-        )
-        axes[1].set_title('Complementary plane colored by Zernike distance')
-
-        # colorbars (independent scales but same cmap)
-        cbar0 = fig.colorbar(sc0, ax=axes[0])
-        cbar0.set_label('Physical distance (Å)')
-        cbar1 = fig.colorbar(sc1, ax=axes[1])
-        cbar1.set_label('Zernike distance')
-
-        fig.suptitle('Complementary plane: physical vs Zernike')
-        fig.savefig(output_file, dpi=180, bbox_inches='tight')
-        plt.close(fig)
 
     def compute(self, plot=False, save_csv=False):
         print(f'Loading surfaces: {self.file_name1} and {self.file_name2}')
@@ -488,16 +116,16 @@ class ComplementaryPlane:
         midpoints = np.vstack((midpoints1, midpoints2))
         print(f'Collected midpoints: bs1->bs2={len(midpoints1)}, bs2->bs1={len(midpoints2)}, total={len(midpoints)}')
 
-        centroid, basis, _, plane_u_mid, plane_v_mid = self.fit_plane(midpoints)
+        centroid, basis, _, plane_u_mid, plane_v_mid = fit_plane(midpoints)
         plane_normal = basis[2]
-        center_uv, center_proj = self.project_point_to_plane(binding_site_centroid, centroid, basis)
-        _, plane_coords1, _ = self.project_surface_to_plane(bs1, centroid, basis)
-        _, plane_coords2, _ = self.project_surface_to_plane(bs2, centroid, basis)
+        center_uv, center_proj = project_point_to_plane(binding_site_centroid, centroid, basis)
+        _, plane_coords1, _ = project_surface_to_plane(bs1, centroid, basis)
+        _, plane_coords2, _ = project_surface_to_plane(bs2, centroid, basis)
 
         if self.verbose:
             print('Projecting the binding-site centroid on the plane and building concentric rings')
 
-        circle_radius, ring_width, _, _, ring_ids1, ring_ids2 = self.build_concentric_rings(
+        circle_radius, ring_width, _, _, ring_ids1, ring_ids2 = build_concentric_rings(
             plane_coords1,
             plane_coords2,
             center_uv,
@@ -508,7 +136,7 @@ class ComplementaryPlane:
             print(f'Circle center projected at u={center_uv[0]:.6f}, v={center_uv[1]:.6f}')
             print(f'Final circle radius={circle_radius:.6f}; ring width={ring_width:.6f}')
 
-        sampled_pairs = self.select_ring_pairs(
+        sampled_pairs = select_ring_pairs(
             plane_coords1,
             plane_coords2,
             coords_bs1,
@@ -556,8 +184,8 @@ class ComplementaryPlane:
         scalar_prod = np.sum(normals1 * normals2, axis=1)
         del ring_ids1, ring_ids2  # Free memory
 
-        flatness1 = self._calculate_flatness(coords_bs1)
-        flatness2 = self._calculate_flatness(coords_bs2)
+        flatness1 = calculate_flatness(coords_bs1)
+        flatness2 = calculate_flatness(coords_bs2)
         flatness = float(np.nanmean([flatness1, flatness2]))
 
         gyration_values = [self.surface1_info.get('gyration_radius', np.nan), self.surface2_info.get('gyration_radius', np.nan)]
@@ -611,11 +239,11 @@ class ComplementaryPlane:
 
                 ring_plane_coords = ring_sub[['plane_u1', 'plane_v1']].to_numpy(dtype=float)
                 if summary_type == 'weighted':
-                    phys_mean, phys_unc = self._weighted_stats(ring_sub['physical_distance'].to_numpy(dtype=float), ring_plane_coords)
-                    zern_mean, zern_unc = self._weighted_stats(ring_sub['zernike_distance'].to_numpy(dtype=float), ring_plane_coords)
+                    phys_mean, phys_unc = weighted_stats(ring_sub['physical_distance'].to_numpy(dtype=float), ring_plane_coords)
+                    zern_mean, zern_unc = weighted_stats(ring_sub['zernike_distance'].to_numpy(dtype=float), ring_plane_coords)
                 else:
-                    phys_mean, phys_unc = self._normal_stats(ring_sub['physical_distance'].to_numpy(dtype=float))
-                    zern_mean, zern_unc = self._normal_stats(ring_sub['zernike_distance'].to_numpy(dtype=float))
+                    phys_mean, phys_unc = normal_stats(ring_sub['physical_distance'].to_numpy(dtype=float))
+                    zern_mean, zern_unc = normal_stats(ring_sub['zernike_distance'].to_numpy(dtype=float))
 
                 row[f'physical_ring{rid}_mean'] = phys_mean
                 row[f'physical_ring{rid}_uncertainty'] = phys_unc
@@ -624,11 +252,11 @@ class ComplementaryPlane:
 
             all_coords = df_out[['plane_u1', 'plane_v1']].to_numpy(dtype=float)
             if summary_type == 'weighted':
-                roughness_mean, roughness_unc = self._weighted_stats(df_out['PC3'].to_numpy(dtype=float), all_coords)
-                scalar_mean, scalar_unc = self._weighted_stats(df_out['scalar_prod'].to_numpy(dtype=float), all_coords)
+                roughness_mean, roughness_unc = weighted_stats(df_out['PC3'].to_numpy(dtype=float), all_coords)
+                scalar_mean, scalar_unc = weighted_stats(df_out['scalar_prod'].to_numpy(dtype=float), all_coords)
             else:
-                roughness_mean, roughness_unc = self._normal_stats(df_out['PC3'].to_numpy(dtype=float))
-                scalar_mean, scalar_unc = self._normal_stats(df_out['scalar_prod'].to_numpy(dtype=float))
+                roughness_mean, roughness_unc = normal_stats(df_out['PC3'].to_numpy(dtype=float))
+                scalar_mean, scalar_unc = normal_stats(df_out['scalar_prod'].to_numpy(dtype=float))
 
             row['gyration_radius'] = gyration_radius
             row['gyration_radius_note'] = gyration_radius_note
@@ -706,7 +334,7 @@ class ComplementaryPlane:
             else:
                 combined_plot = self.output_path / f'{self.file_name1}_{self.file_name2}_plane_comparison.png'
             # Plot only matched points on the plane (no cell rendering, no black unmatched cells)
-            self.plot_plane_subplots(
+            plot_plane_subplots(
                 df_out,
                 'physical_distance',
                 'zernike_distance',
