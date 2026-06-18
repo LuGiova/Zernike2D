@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
 from scipy.stats import gaussian_kde
+from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 
 
@@ -202,3 +203,348 @@ def weighted_stats(values, plane_coords):
     variance = float(np.sum(weights * (values - weighted_mean) ** 2))
     uncertainty = float(np.sqrt(variance / effective_n)) if effective_n > 0 else float('nan')
     return weighted_mean, uncertainty
+
+
+def select_ring_pairs_angular_cells(plane_coords1, plane_coords2, coords1, coords2, center_uv, plane_point, plane_normal, basis, radius, ring_ids1, ring_ids2, target_cells, n_rings=10):
+    """Sample pairs using radial subrings within each ring.
+
+    Each ring is split into 10 equal-thickness subrings. Every subring is handled
+    independently. If a subring contains few points, all of them are matched directly.
+    Otherwise, the subring is subdivided into radial cells and the number of cells is
+    adapted so that the number of qualifying cells stays close to the requested target
+    per subring.
+    """
+    center_uv = np.asarray(center_uv, dtype=float)
+    relative1 = plane_coords1 - center_uv
+    relative2 = plane_coords2 - center_uv
+    radii1 = np.linalg.norm(relative1, axis=1)
+    radii2 = np.linalg.norm(relative2, axis=1)
+
+    n_subrings = 10
+    target_per_subring = max(1, int(np.ceil(float(target_cells) / float(n_subrings))))
+    lower_bound = max(1, int(np.floor(target_per_subring * 0.9)))
+    upper_bound = max(lower_bound, int(np.ceil(target_per_subring * 1.1)))
+
+    records = []
+    for ring_id in range(n_rings):
+        indices1 = np.flatnonzero(ring_ids1 == ring_id)
+        indices2 = np.flatnonzero(ring_ids2 == ring_id)
+
+        if len(indices1) == 0 or len(indices2) == 0:
+            continue
+
+        ring_width = float(radius / float(n_rings))
+        ring_inner_radius = float(ring_id * ring_width)
+        subring_width = float(ring_width / float(n_subrings))
+
+        radii1_ring = radii1[indices1]
+        radii2_ring = radii2[indices2]
+
+        for subring_id in range(n_subrings):
+            sub_inner = ring_inner_radius + float(subring_id) * subring_width
+            sub_outer = sub_inner + subring_width
+            if subring_id == n_subrings - 1:
+                mask1 = (radii1_ring >= sub_inner) & (radii1_ring <= sub_outer)
+                mask2 = (radii2_ring >= sub_inner) & (radii2_ring <= sub_outer)
+            else:
+                mask1 = (radii1_ring >= sub_inner) & (radii1_ring < sub_outer)
+                mask2 = (radii2_ring >= sub_inner) & (radii2_ring < sub_outer)
+
+            sub_indices1 = indices1[mask1]
+            sub_indices2 = indices2[mask2]
+            if len(sub_indices1) == 0 or len(sub_indices2) == 0:
+                continue
+
+            sub_total = len(sub_indices1) + len(sub_indices2)
+
+            if sub_total <= int(np.ceil(target_per_subring * 1.5)):
+                distance_matrix = np.linalg.norm(
+                    plane_coords1[sub_indices1][:, None, :] - plane_coords2[sub_indices2][None, :, :],
+                    axis=2,
+                )
+                row_ind, col_ind = linear_sum_assignment(distance_matrix)
+                for row, col in zip(row_ind, col_ind):
+                    idx1 = int(sub_indices1[row])
+                    idx2 = int(sub_indices2[col])
+                    proj1 = plane_coords1[idx1]
+                    proj2 = plane_coords2[idx2]
+                    intersection_3d = segment_plane_intersection(coords1[idx1], coords2[idx2], plane_point, plane_normal)
+                    intersection_uv, intersection_proj = project_point_to_plane(intersection_3d, plane_point, basis)
+                    relative_intersection = intersection_uv - center_uv
+                    cell_center_uv = (proj1 + proj2) / 2.0
+
+                    records.append({
+                        'idx1': idx1,
+                        'idx2': idx2,
+                        'ring_id': int(ring_id + 1),
+                        'ring_fraction': float((ring_id + 1) / n_rings),
+                        'circle_radius': float(radius),
+                        'ring_width': ring_width,
+                        'ring_inner_radius': float(ring_id * ring_width),
+                        'ring_outer_radius': float((ring_id + 1) * ring_width),
+                        'plane_u1': float(proj1[0]),
+                        'plane_v1': float(proj1[1]),
+                        'plane_u2': float(proj2[0]),
+                        'plane_v2': float(proj2[1]),
+                        'plane_u': float(cell_center_uv[0]),
+                        'plane_v': float(cell_center_uv[1]),
+                        'rep_x': float(intersection_proj[0]),
+                        'rep_y': float(intersection_proj[1]),
+                        'rep_z': float(intersection_proj[2]),
+                        'theta': float(np.arctan2(relative_intersection[1], relative_intersection[0])),
+                        'radial_distance': float(np.linalg.norm(relative_intersection)),
+                        'ring_radius1': float(np.linalg.norm(proj1 - center_uv)),
+                        'ring_radius2': float(np.linalg.norm(proj2 - center_uv)),
+                    })
+                continue
+
+            preferred_cells = max(2, min(target_per_subring, len(sub_indices1), len(sub_indices2)))
+            max_cells = max(2, min(len(sub_indices1), len(sub_indices2), target_per_subring * 3))
+
+            selected = None
+            best_candidate = None
+            best_score = None
+
+            candidate_offsets = [0]
+            for step in range(1, max_cells + 1):
+                candidate_offsets.extend([step, -step])
+
+            radii1_sub = radii1[sub_indices1]
+            radii2_sub = radii2[sub_indices2]
+
+            for offset in candidate_offsets:
+                n_cells = preferred_cells + offset
+                if n_cells < 2 or n_cells > max_cells:
+                    continue
+
+                bin_edges = np.linspace(sub_inner, sub_outer, n_cells + 1)
+                bins1 = np.clip(np.digitize(radii1_sub, bin_edges), 1, n_cells)
+                bins2 = np.clip(np.digitize(radii2_sub, bin_edges), 1, n_cells)
+
+                counts1 = np.bincount(bins1, minlength=n_cells + 1)[1:]
+                counts2 = np.bincount(bins2, minlength=n_cells + 1)[1:]
+                qualifying_mask = (counts1 > 0) & (counts2 > 0)
+                qualifying_bins = np.flatnonzero(qualifying_mask) + 1
+                qualifying_count = int(len(qualifying_bins))
+
+                score = abs(qualifying_count - target_per_subring)
+                if best_score is None or score < best_score:
+                    best_score = score
+                    best_candidate = (n_cells, bin_edges, bins1, bins2, qualifying_bins)
+
+                if lower_bound <= qualifying_count <= upper_bound:
+                    selected = (n_cells, bin_edges, bins1, bins2, qualifying_bins)
+                    break
+
+            if selected is None:
+                selected = best_candidate
+
+            n_cells, bin_edges, bins1, bins2, qualifying_bins = selected
+
+            for bin_id in qualifying_bins:
+                mask1 = bins1 == bin_id
+                mask2 = bins2 == bin_id
+
+                bin_indices1 = sub_indices1[mask1]
+                bin_indices2 = sub_indices2[mask2]
+                if len(bin_indices1) == 0 or len(bin_indices2) == 0:
+                    continue
+
+                bin_center_radius = float(bin_edges[bin_id - 1] + (bin_edges[bin_id] - bin_edges[bin_id - 1]) / 2.0)
+                dist1 = np.abs(radii1[bin_indices1] - bin_center_radius)
+                dist2 = np.abs(radii2[bin_indices2] - bin_center_radius)
+                idx1 = int(bin_indices1[int(np.argmin(dist1))])
+                idx2 = int(bin_indices2[int(np.argmin(dist2))])
+
+                proj1 = plane_coords1[idx1]
+                proj2 = plane_coords2[idx2]
+                intersection_3d = segment_plane_intersection(coords1[idx1], coords2[idx2], plane_point, plane_normal)
+                intersection_uv, intersection_proj = project_point_to_plane(intersection_3d, plane_point, basis)
+                relative_intersection = intersection_uv - center_uv
+                cell_center_uv = (proj1 + proj2) / 2.0
+
+                records.append({
+                    'idx1': idx1,
+                    'idx2': idx2,
+                    'ring_id': int(ring_id + 1),
+                    'ring_fraction': float((ring_id + 1) / n_rings),
+                    'circle_radius': float(radius),
+                    'ring_width': ring_width,
+                    'ring_inner_radius': float(ring_id * ring_width),
+                    'ring_outer_radius': float((ring_id + 1) * ring_width),
+                    'plane_u1': float(proj1[0]),
+                    'plane_v1': float(proj1[1]),
+                    'plane_u2': float(proj2[0]),
+                    'plane_v2': float(proj2[1]),
+                    'plane_u': float(cell_center_uv[0]),
+                    'plane_v': float(cell_center_uv[1]),
+                    'rep_x': float(intersection_proj[0]),
+                    'rep_y': float(intersection_proj[1]),
+                    'rep_z': float(intersection_proj[2]),
+                    'theta': float(np.arctan2(relative_intersection[1], relative_intersection[0])),
+                    'radial_distance': float(np.linalg.norm(relative_intersection)),
+                    'ring_radius1': float(np.linalg.norm(proj1 - center_uv)),
+                    'ring_radius2': float(np.linalg.norm(proj2 - center_uv)),
+                })
+
+    return pd.DataFrame.from_records(records)
+
+
+def select_ring_pairs_kmeans(plane_coords1, plane_coords2, coords1, coords2, center_uv, plane_point, plane_normal, basis, radius, ring_ids1, ring_ids2, n_clusters, n_rings=10):
+    """Sample pairs using K-Means clustering of segment-plane intersections.
+    
+    For each ring:
+    - Find nearest neighbor matches from binding site 1 to 2, and vice versa
+    - Compute intersection points where connecting segments cross the plane
+    - Cluster these intersections using K-Means
+        - Select the intersection closest to each cluster centroid as the representative point
+            while keeping both binding-site points unique across clusters in the same ring
+    """
+    center_uv = np.asarray(center_uv, dtype=float)
+    
+    records = []
+    for ring_id in range(n_rings):
+        indices1 = np.flatnonzero(ring_ids1 == ring_id)
+        indices2 = np.flatnonzero(ring_ids2 == ring_id)
+        
+        if len(indices1) == 0 or len(indices2) == 0:
+            continue
+        
+        # Collect all intersection points
+        intersections_data = []  # List of tuples (idx1, idx2, intersection_uv, intersection_proj)
+        
+        # Forward matching: bs1 -> bs2
+        coords1_ring = plane_coords1[indices1]
+        coords2_ring = plane_coords2[indices2]
+        
+        for i, idx1 in enumerate(indices1):
+            # Find nearest neighbor in bs2
+            distances = np.linalg.norm(coords1_ring[i:i+1] - coords2_ring, axis=1)
+            nearest_j = np.argmin(distances)
+            idx2 = indices2[nearest_j]
+            
+            # Compute intersection
+            intersection_3d = segment_plane_intersection(coords1[idx1], coords2[idx2], plane_point, plane_normal)
+            intersection_uv, intersection_proj = project_point_to_plane(intersection_3d, plane_point, basis)
+            intersections_data.append((idx1, idx2, intersection_uv.copy(), intersection_proj.copy()))
+        
+        # Reverse matching: bs2 -> bs1
+        for i, idx2 in enumerate(indices2):
+            # Find nearest neighbor in bs1
+            distances = np.linalg.norm(coords2_ring[i:i+1] - coords1_ring, axis=1)
+            nearest_j = np.argmin(distances)
+            idx1 = indices1[nearest_j]
+            
+            # Compute intersection
+            intersection_3d = segment_plane_intersection(coords1[idx1], coords2[idx2], plane_point, plane_normal)
+            intersection_uv, intersection_proj = project_point_to_plane(intersection_3d, plane_point, basis)
+            intersections_data.append((idx1, idx2, intersection_uv.copy(), intersection_proj.copy()))
+        
+        if len(intersections_data) == 0:
+            continue
+        
+        # Extract UV coordinates for clustering
+        intersection_uvs = np.array([data[2] for data in intersections_data])
+        
+        # Determine actual number of clusters (at most number of intersections)
+        actual_clusters = min(n_clusters, len(intersections_data))
+        used_idx1 = set()
+        used_idx2 = set()
+        
+        if actual_clusters == 1:
+            # Single cluster: use the mean intersection
+            mean_idx = np.argmin(np.linalg.norm(intersection_uvs - intersection_uvs.mean(axis=0), axis=1))
+            idx1, idx2, intersection_uv, intersection_proj = intersections_data[mean_idx]
+            proj1 = plane_coords1[idx1]
+            proj2 = plane_coords2[idx2]
+            relative_intersection = intersection_uv - center_uv
+            
+            records.append({
+                'idx1': int(idx1),
+                'idx2': int(idx2),
+                'ring_id': int(ring_id + 1),
+                'ring_fraction': float((ring_id + 1) / n_rings),
+                'circle_radius': float(radius),
+                'ring_width': float(radius / float(n_rings)),
+                'ring_inner_radius': float(ring_id * (radius / float(n_rings))),
+                'ring_outer_radius': float((ring_id + 1) * (radius / float(n_rings))),
+                'plane_u1': float(proj1[0]),
+                'plane_v1': float(proj1[1]),
+                'plane_u2': float(proj2[0]),
+                'plane_v2': float(proj2[1]),
+                'plane_u': float(intersection_uv[0]),
+                'plane_v': float(intersection_uv[1]),
+                'rep_x': float(intersection_proj[0]),
+                'rep_y': float(intersection_proj[1]),
+                'rep_z': float(intersection_proj[2]),
+                'theta': float(np.arctan2(relative_intersection[1], relative_intersection[0])),
+                'radial_distance': float(np.linalg.norm(relative_intersection)),
+                'ring_radius1': float(np.linalg.norm(proj1 - center_uv)),
+                'ring_radius2': float(np.linalg.norm(proj2 - center_uv)),
+            })
+        else:
+            # Multiple clusters: use K-Means
+            kmeans = KMeans(n_clusters=actual_clusters, random_state=42, n_init=10)
+            labels = kmeans.fit_predict(intersection_uvs)
+            
+            # For each cluster, find the point closest to the centroid
+            for cluster_id in range(actual_clusters):
+                cluster_mask = labels == cluster_id
+                cluster_intersections = [intersections_data[i] for i in range(len(intersections_data)) if cluster_mask[i]]
+                cluster_uvs = intersection_uvs[cluster_mask]
+                
+                # Find point closest to cluster centroid, but only if both indices are unused
+                centroid = kmeans.cluster_centers_[cluster_id]
+                distances_to_centroid = np.linalg.norm(cluster_uvs - centroid, axis=1)
+                candidate_order = np.argsort(distances_to_centroid)
+
+                selected_candidate = None
+                for candidate_idx in candidate_order:
+                    candidate = cluster_intersections[candidate_idx]
+                    candidate_idx1 = int(candidate[0])
+                    candidate_idx2 = int(candidate[1])
+                    if candidate_idx1 in used_idx1 or candidate_idx2 in used_idx2:
+                        continue
+                    selected_candidate = candidate
+                    used_idx1.add(candidate_idx1)
+                    used_idx2.add(candidate_idx2)
+                    break
+
+                if selected_candidate is None:
+                    fallback_candidate = cluster_intersections[int(candidate_order[0])]
+                    fallback_idx1 = int(fallback_candidate[0])
+                    fallback_idx2 = int(fallback_candidate[1])
+                    selected_candidate = fallback_candidate
+                    used_idx1.add(fallback_idx1)
+                    used_idx2.add(fallback_idx2)
+                
+                idx1, idx2, intersection_uv, intersection_proj = selected_candidate
+                proj1 = plane_coords1[idx1]
+                proj2 = plane_coords2[idx2]
+                relative_intersection = intersection_uv - center_uv
+                
+                records.append({
+                    'idx1': int(idx1),
+                    'idx2': int(idx2),
+                    'ring_id': int(ring_id + 1),
+                    'ring_fraction': float((ring_id + 1) / n_rings),
+                    'circle_radius': float(radius),
+                    'ring_width': float(radius / float(n_rings)),
+                    'ring_inner_radius': float(ring_id * (radius / float(n_rings))),
+                    'ring_outer_radius': float((ring_id + 1) * (radius / float(n_rings))),
+                    'plane_u1': float(proj1[0]),
+                    'plane_v1': float(proj1[1]),
+                    'plane_u2': float(proj2[0]),
+                    'plane_v2': float(proj2[1]),
+                    'plane_u': float(centroid[0]),
+                    'plane_v': float(centroid[1]),
+                    'rep_x': float(intersection_proj[0]),
+                    'rep_y': float(intersection_proj[1]),
+                    'rep_z': float(intersection_proj[2]),
+                    'theta': float(np.arctan2(relative_intersection[1], relative_intersection[0])),
+                    'radial_distance': float(np.linalg.norm(relative_intersection)),
+                    'ring_radius1': float(np.linalg.norm(proj1 - center_uv)),
+                    'ring_radius2': float(np.linalg.norm(proj2 - center_uv)),
+                })
+    
+    return pd.DataFrame.from_records(records)

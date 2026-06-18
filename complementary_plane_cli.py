@@ -44,6 +44,12 @@ def build_cli_complementary_plane2():
     optional.add_argument("-p", "--plot",
                           action='store_true',
                           help="boolean; generate plots")
+    optional.add_argument("--sampling-strategy",
+                          type=str,
+                          choices=['default', 'angular_cells', 'kmeans'],
+                          default='default',
+                          help="string; sampling strategy: 'default' (current), 'angular_cells', or 'kmeans' (default: default)",
+                          metavar="")
     optional.add_argument("-h", "--help",
                           action="help",
                           help="show this help message and exit")

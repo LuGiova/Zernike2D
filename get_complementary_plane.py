@@ -15,6 +15,8 @@ from plane_geometry import (
     project_point_to_plane,
     project_surface_to_plane,
     select_ring_pairs,
+    select_ring_pairs_angular_cells,
+    select_ring_pairs_kmeans,
     weighted_stats,
 )
 from plane_plotting import plot_plane_subplots
@@ -28,7 +30,7 @@ np.seterr(divide='ignore', invalid='ignore')
 
 
 class ComplementaryPlane:
-    def __init__(self, surface_file1, surface_file2, output_path, threshold=5.0, points=100, output_name=None, verbose=False):
+    def __init__(self, surface_file1, surface_file2, output_path, threshold=5.0, points=100, output_name=None, sampling_strategy='default', verbose=False):
         self.surface_file1 = Path(surface_file1)
         self.surface_file2 = Path(surface_file2)
         self.file_name1 = self.surface_file1.stem
@@ -38,6 +40,7 @@ class ComplementaryPlane:
         self.threshold = threshold
         self.points = points
         self.output_name = output_name
+        self.sampling_strategy = sampling_strategy
         self.verbose = verbose
         self.surface1, self.surface1_info = load_surface_input(self.surface_file1)
         self.surface2, self.surface2_info = load_surface_input(self.surface_file2)
@@ -135,21 +138,59 @@ class ComplementaryPlane:
             print(f'Circle center projected at u={center_uv[0]:.6f}, v={center_uv[1]:.6f}')
             print(f'Final circle radius={circle_radius:.6f}; ring width={ring_width:.6f}')
 
-        sampled_pairs = select_ring_pairs(
-            plane_coords1,
-            plane_coords2,
-            coords_bs1,
-            coords_bs2,
-            center_uv,
-            centroid,
-            plane_normal,
-            basis,
-            circle_radius,
-            ring_ids1,
-            ring_ids2,
-            self.points,
-            n_rings=10,
-        )
+        # Choose sampling strategy
+        if self.sampling_strategy == 'angular_cells':
+            if self.verbose:
+                print(f'Using angular cells sampling strategy with {self.points} target cells per ring')
+            sampled_pairs = select_ring_pairs_angular_cells(
+                plane_coords1,
+                plane_coords2,
+                coords_bs1,
+                coords_bs2,
+                center_uv,
+                centroid,
+                plane_normal,
+                basis,
+                circle_radius,
+                ring_ids1,
+                ring_ids2,
+                self.points,
+                n_rings=10,
+            )
+        elif self.sampling_strategy == 'kmeans':
+            if self.verbose:
+                print(f'Using K-Means sampling strategy with {self.points} clusters per ring')
+            sampled_pairs = select_ring_pairs_kmeans(
+                plane_coords1,
+                plane_coords2,
+                coords_bs1,
+                coords_bs2,
+                center_uv,
+                centroid,
+                plane_normal,
+                basis,
+                circle_radius,
+                ring_ids1,
+                ring_ids2,
+                self.points,
+                n_rings=10,
+            )
+        else:  # default
+            sampled_pairs = select_ring_pairs(
+                plane_coords1,
+                plane_coords2,
+                coords_bs1,
+                coords_bs2,
+                center_uv,
+                centroid,
+                plane_normal,
+                basis,
+                circle_radius,
+                ring_ids1,
+                ring_ids2,
+                self.points,
+                n_rings=10,
+            )
 
         if sampled_pairs.empty:
             raise ValueError('Ring-based sampling produced no matched pairs')
@@ -225,7 +266,14 @@ class ComplementaryPlane:
 
         ring_ids = list(range(1, 11))
         summary_rows = []
-        for summary_type in ('weighted', 'normal'):
+        
+        # Choose which summary types to compute based on sampling strategy
+        if self.sampling_strategy == 'default':
+            summary_types = ('weighted', 'normal')
+        else:
+            summary_types = ('normal',)
+        
+        for summary_type in summary_types:
             row = {}
             for rid in ring_ids:
                 ring_sub = df_out[df_out['ring_id'] == rid]
@@ -352,6 +400,7 @@ def main():
         threshold=args.threshold,
         points=args.points,
         output_name=getattr(args, 'output_name', None),
+        sampling_strategy=getattr(args, 'sampling_strategy', 'default'),
         verbose=getattr(args, 'verbose', False),
     )
     # run compute; CSV saved only if --csv flag provided; summary saved if requested
