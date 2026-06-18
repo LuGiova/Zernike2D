@@ -20,7 +20,6 @@ from plane_geometry import (
 from plane_plotting import plot_plane_subplots
 from surface_processing import (
     calculate_flatness,
-    calculate_gyration_radius,
     load_surface_input,
 )
 
@@ -116,7 +115,7 @@ class ComplementaryPlane:
         midpoints = np.vstack((midpoints1, midpoints2))
         print(f'Collected midpoints: bs1->bs2={len(midpoints1)}, bs2->bs1={len(midpoints2)}, total={len(midpoints)}')
 
-        centroid, basis, _, plane_u_mid, plane_v_mid = fit_plane(midpoints)
+        centroid, basis, _, _, _ = fit_plane(midpoints)
         plane_normal = basis[2]
         center_uv, center_proj = project_point_to_plane(binding_site_centroid, centroid, basis)
         _, plane_coords1, _ = project_surface_to_plane(bs1, centroid, basis)
