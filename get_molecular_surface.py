@@ -2,7 +2,7 @@ import subprocess
 from pathlib import Path
 import pandas as pd
 import numpy as np
-from .docs import build_cli_molecular_surface
+from docs import build_cli_molecular_surface
 
 
 class MolecularSurface:
