@@ -5,6 +5,8 @@ __pycache__/
 old_data/
 input_files/1a1u.pdb
 input_files/get_chains.R
+input_files/**/*.zip
+!input_files/**/dms.zip
 uninstall.txt
 .venv-originale/
 .venv-ottimizzato/
