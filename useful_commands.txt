@@ -1,0 +1,3 @@
+poetry run python get_complementary_plane.py   --batch-zip ./input_files/dataset.zip   -o ./output_files/default/   -t 5.0   -n 100   --sampling-strategy default   --batch-summary ./output_files/default_summary.csv   --workers 2
+
+curl -L -o ./input_files/dataset.zip "https://github.com/LuGiova/Zernike2D/releases/download/Training_Datasets/protein-protein-dataset.zip"
