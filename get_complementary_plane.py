@@ -187,6 +187,12 @@ class ComplementaryPlane:
         center_uv, center_proj = project_point_to_plane(binding_site_centroid, centroid, basis)
         _, plane_coords1, _ = project_surface_to_plane(bs1, centroid, basis)
         _, plane_coords2, _ = project_surface_to_plane(bs2, centroid, basis)
+        bs1_pc3 = (coords_bs1 - centroid) @ plane_normal
+        bs2_pc3 = (coords_bs2 - centroid) @ plane_normal
+        bs1_pc3_mean = float(np.mean(bs1_pc3))
+        bs2_pc3_mean = float(np.mean(bs2_pc3))
+        bs1_pc3_var = float(np.var(bs1_pc3))
+        bs2_pc3_var = float(np.var(bs2_pc3))
 
         self._log('Projecting the binding-site centroid on the plane and building concentric rings')
         circle_radius, ring_width, _, _, ring_ids1, ring_ids2 = build_concentric_rings(
@@ -261,6 +267,8 @@ class ComplementaryPlane:
         idx1 = sampled_pairs['idx1'].to_numpy(dtype=int)
         idx2 = sampled_pairs['idx2'].to_numpy(dtype=int)
         physical_distance = np.linalg.norm(coords_bs1[idx1] - coords_bs2[idx2], axis=1)
+        pc3_1 = bs1_pc3[idx1]
+        pc3_2 = bs2_pc3[idx2]
         del plane_coords1, plane_coords2  # Free memory
 
         unique_idx1, inverse_idx1 = np.unique(idx1, return_inverse=True)
@@ -289,7 +297,6 @@ class ComplementaryPlane:
         zernike_distance = np.linalg.norm(coeff1 - coeff2, axis=1)
         del coeff1_unique, coeff2_unique, unique_idx1, unique_idx2, inverse_idx1, inverse_idx2  # Free memory
 
-        pc3 = (np.abs(coeff1[:, 2]) + np.abs(coeff2[:, 2])) / 2.0
         normals1 = bs1.iloc[idx1][['nx', 'ny', 'nz']].to_numpy(dtype=float)
         normals2 = bs2.iloc[idx2][['nx', 'ny', 'nz']].to_numpy(dtype=float)
         scalar_prod = np.sum(normals1 * normals2, axis=1)
@@ -323,17 +330,18 @@ class ComplementaryPlane:
             'ring_id': sampled_pairs['ring_id'].to_numpy(dtype=int),
             'plane_u1': sampled_pairs['plane_u1'].to_numpy(dtype=float),
             'plane_v1': sampled_pairs['plane_v1'].to_numpy(dtype=float),
+            'PC3_1': pc3_1,
             'plane_u2': sampled_pairs['plane_u2'].to_numpy(dtype=float),
             'plane_v2': sampled_pairs['plane_v2'].to_numpy(dtype=float),
+            'PC3_2': pc3_2,
             'rep_x': sampled_pairs['rep_x'].to_numpy(dtype=float),
             'rep_y': sampled_pairs['rep_y'].to_numpy(dtype=float),
             'rep_z': sampled_pairs['rep_z'].to_numpy(dtype=float),
             'scalar_prod': scalar_prod,
-            'PC3': pc3,
             'physical_distance': physical_distance,
             'zernike_distance': zernike_distance,
         })
-        del bs1, bs2, coords_bs1, coords_bs2, sampled_pairs, idx1, idx2, physical_distance, pc3, normals1, normals2, scalar_prod, coeff1, coeff2  # Free memory
+        del bs1, bs2, coords_bs1, coords_bs2, sampled_pairs, idx1, idx2, physical_distance, pc3_1, pc3_2, normals1, normals2, scalar_prod, coeff1, coeff2  # Free memory
 
         ring_ids = list(range(1, 11))
         summary_rows = []
@@ -368,19 +376,18 @@ class ComplementaryPlane:
                 row[f'zernike_ring{rid}_mean'] = zern_mean
                 row[f'zernike_ring{rid}_uncertainty'] = zern_unc
 
-            all_coords = df_out[['plane_u1', 'plane_v1']].to_numpy(dtype=float)
+            pc3_mean = float((bs1_pc3_mean + bs2_pc3_mean) / 2.0)
+            roughness_value = float(np.sqrt((bs1_pc3_var + bs2_pc3_var) / 2.0))
             if summary_type == 'weighted':
-                roughness_mean, roughness_unc = weighted_stats(df_out['PC3'].to_numpy(dtype=float), all_coords)
-                scalar_mean, scalar_unc = weighted_stats(df_out['scalar_prod'].to_numpy(dtype=float), all_coords)
+                scalar_mean, scalar_unc = weighted_stats(df_out['scalar_prod'].to_numpy(dtype=float), df_out[['plane_u1', 'plane_v1']].to_numpy(dtype=float))
             else:
-                roughness_mean, roughness_unc = normal_stats(df_out['PC3'].to_numpy(dtype=float))
                 scalar_mean, scalar_unc = normal_stats(df_out['scalar_prod'].to_numpy(dtype=float))
 
             row['gyration_radius'] = gyration_radius
             row['gyration_radius_note'] = gyration_radius_note
             row['flatness'] = flatness
-            row['roughness'] = roughness_mean
-            row['roughness_uncertainty'] = roughness_unc
+            row['PC3'] = pc3_mean
+            row['roughness'] = roughness_value
             row['scalar_prod'] = scalar_mean
             row['scalar_prod_uncertainty'] = scalar_unc
             row['summary_type'] = summary_type
@@ -402,8 +409,8 @@ class ComplementaryPlane:
             'gyration_radius',
             'gyration_radius_note',
             'flatness',
+            'PC3',
             'roughness',
-            'roughness_uncertainty',
             'scalar_prod',
             'scalar_prod_uncertainty',
             'summary_type',
@@ -434,7 +441,7 @@ class ComplementaryPlane:
                 f"# n_rings: 10",
             ]
 
-            detailed_df = df_out[['idx1', 'res1', 'x1', 'y1', 'z1', 'idx2', 'res2', 'x2', 'y2', 'z2', 'ring_id', 'plane_u1', 'plane_v1', 'plane_u2', 'plane_v2', 'rep_x', 'rep_y', 'rep_z', 'scalar_prod', 'PC3', 'physical_distance', 'zernike_distance']]
+            detailed_df = df_out[['idx1', 'res1', 'x1', 'y1', 'z1', 'idx2', 'res2', 'x2', 'y2', 'z2', 'ring_id', 'plane_u1', 'plane_v1', 'PC3_1', 'plane_u2', 'plane_v2', 'PC3_2', 'rep_x', 'rep_y', 'rep_z', 'scalar_prod', 'physical_distance', 'zernike_distance']]
 
             with open(output_csv, 'w', newline='') as fh:
                 for line in meta_lines:

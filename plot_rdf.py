@@ -13,6 +13,13 @@ import argparse
 import sys
 
 
+def _default_output_stem(summary_path):
+    stem = summary_path.stem
+    if stem.endswith('_summary'):
+        return stem[:-len('_summary')]
+    return stem
+
+
 def plot_radial_histograms(summary_csv_path, output_path=None):
     """
     Create two subplots showing ring-by-ring histograms with uncertainties
@@ -132,7 +139,7 @@ def plot_radial_histograms(summary_csv_path, output_path=None):
     
     # Save output
     if output_path is None:
-        output_path = summary_path.parent / f'{summary_path.stem}_radial_histograms.png'
+        output_path = summary_path.parent / f'{_default_output_stem(summary_path)}_rdf.png'
     else:
         output_path = Path(output_path)
     
@@ -147,7 +154,7 @@ def main():
         description='Plot radial function histograms with uncertainties from summary CSV'
     )
     parser.add_argument('summary_csv', help='Path to summary.csv from get_complementary_plane2.py')
-    parser.add_argument('-o', '--output', help='Output path for plot (default: <stem>_radial_histograms.png)')
+    parser.add_argument('-o', '--output', help='Output path for plot (default: <stem without _summary>_rdf.png)')
     
     args = parser.parse_args()
     
