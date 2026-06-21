@@ -14,7 +14,9 @@ dependencies = [
     "scipy==1.13.0",
     "tqdm==4.66.4",
     "zepyros @ git+https://github.com/LuGiova/zepyros.git",
-    "scikit-learn==1.5.0"
+    "scikit-learn==1.5.0",
+    "ipywidgets (>=8.1.8,<9.0.0)",
+    "jupyter (>=1.1.1,<2.0.0)"
 ]
 
 [tool.poetry]

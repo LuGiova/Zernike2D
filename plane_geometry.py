@@ -507,13 +507,19 @@ def select_ring_pairs_kmeans(plane_coords1, plane_coords2, coords1, coords2, cen
             # For each cluster, find the point closest to the centroid
             for cluster_id in range(actual_clusters):
                 cluster_mask = labels == cluster_id
+                if not np.any(cluster_mask):
+                    continue
                 cluster_intersections = [intersections_data[i] for i in range(len(intersections_data)) if cluster_mask[i]]
                 cluster_uvs = intersection_uvs[cluster_mask]
+                if len(cluster_intersections) == 0:
+                    continue
                 
                 # Find point closest to cluster centroid, but only if both indices are unused
                 centroid = kmeans.cluster_centers_[cluster_id]
                 distances_to_centroid = np.linalg.norm(cluster_uvs - centroid, axis=1)
                 candidate_order = np.argsort(distances_to_centroid)
+                if candidate_order.size == 0:
+                    continue
 
                 selected_candidate = None
                 for candidate_idx in candidate_order:
