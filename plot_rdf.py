@@ -88,6 +88,7 @@ def plot_radial_histograms(summary_csv_path, output_path=None):
     summary_types = sorted(physical_data.keys())
     n_summary_types = len(summary_types)
     offset_step = 0.15 / n_summary_types
+    has_both_types = 'weighted' in summary_types and 'normal' in summary_types
     
     # Plot 1: Physical distance per ring
     ax = axes[0]
@@ -108,7 +109,8 @@ def plot_radial_histograms(summary_csv_path, output_path=None):
     ax.set_title('Physical Distance per Ring', fontsize=13, fontweight='bold')
     ax.set_xticks(np.arange(len(ring_ids)))
     ax.set_xticklabels([f'{r}' for r in ring_ids])
-    ax.legend(title='Summary Type', fontsize=10, loc='best')
+    if has_both_types:
+        ax.legend(title='Summary Type', fontsize=10, loc='best')
     ax.grid(axis='y', alpha=0.3, linestyle='--')
     
     # Plot 2: Zernike distance per ring
@@ -130,7 +132,8 @@ def plot_radial_histograms(summary_csv_path, output_path=None):
     ax.set_title('Zernike Distance per Ring', fontsize=13, fontweight='bold')
     ax.set_xticks(np.arange(len(ring_ids)))
     ax.set_xticklabels([f'{r}' for r in ring_ids])
-    ax.legend(title='Summary Type', fontsize=10, loc='best')
+    if has_both_types:
+        ax.legend(title='Summary Type', fontsize=10, loc='best')
     ax.grid(axis='y', alpha=0.3, linestyle='--')
     
     fig.suptitle(f'Radial Functions with Uncertainties ({summary_path.stem})', 
@@ -139,7 +142,7 @@ def plot_radial_histograms(summary_csv_path, output_path=None):
     
     # Save output
     if output_path is None:
-        output_path = summary_path.parent / f'{_default_output_stem(summary_path)}_rdf.png'
+        output_path = summary_path.parent / f'{_default_output_stem(summary_path)}_rdf.pdf'
     else:
         output_path = Path(output_path)
     

@@ -73,6 +73,23 @@ def build_concentric_rings(plane_coords1, plane_coords2, center_uv, n_rings=10, 
     if np.isclose(max_radius, 0.0):
         raise ValueError('Projected binding sites are degenerate in the complementary plane')
 
+    # Adapt min_outer_points for imbalanced binding sites
+    # If one binding site is much smaller than the other, reduce the requirement
+    total_points1 = len(radii1)
+    total_points2 = len(radii2)
+    min_total = min(total_points1, total_points2)
+    max_total = max(total_points1, total_points2)
+    
+    # If binding sites are very imbalanced, use a smaller min_outer_points
+    if min_total < 50:  # Very small binding site
+        adaptive_min_outer_points = max(1, min_total // 10)  # At least 10% of points, min 1
+    elif min_total < 100:
+        adaptive_min_outer_points = max(2, min_outer_points // 2)
+    else:
+        adaptive_min_outer_points = min_outer_points
+    
+    adaptive_min_outer_points = int(adaptive_min_outer_points)
+
     radius = max_radius
     for _ in range(200):
         ring_width = radius / float(n_rings)
@@ -89,12 +106,12 @@ def build_concentric_rings(plane_coords1, plane_coords2, center_uv, n_rings=10, 
 
         outer_count1 = int(np.count_nonzero(ring_ids1 == (n_rings - 1)))
         outer_count2 = int(np.count_nonzero(ring_ids2 == (n_rings - 1)))
-        if outer_count1 >= min_outer_points and outer_count2 >= min_outer_points:
+        if outer_count1 >= adaptive_min_outer_points and outer_count2 >= adaptive_min_outer_points:
             return radius, ring_width, radii1, radii2, ring_ids1, ring_ids2
 
         radius *= 0.95
 
-    raise ValueError('Unable to find a circle radius where the outer ring contains at least 10 points for both binding sites')
+    raise ValueError(f'Unable to find a circle radius where the outer ring contains at least {adaptive_min_outer_points} points for both binding sites')
 
 
 def select_ring_pairs(plane_coords1, plane_coords2, coords1, coords2, center_uv, plane_point, plane_normal, basis, radius, ring_ids1, ring_ids2, points_per_ring, n_rings=10):

@@ -178,14 +178,14 @@ def _resolve_output_path(summary_path, output_path=None, output_name=None):
     input_stem = summary_path.stem.replace('_summary', '')
     default_stem = output_name or f'{input_stem}_mean_rdf'
     if output_path is None:
-        return summary_path.parent / f'{default_stem}.png'
+        return summary_path.parent / f'{default_stem}.pdf'
 
     output_path = Path(output_path)
     if output_path.exists() and output_path.is_dir():
-        return output_path / f'{default_stem}.png'
+        return output_path / f'{default_stem}.pdf'
     if output_path.suffix:
         return output_path.with_name(f'{default_stem}{output_path.suffix}') if output_name else output_path
-    return output_path / f'{default_stem}.png'
+    return output_path / f'{default_stem}.pdf'
 
 
 def _plot_metric_panel(ax, metric_data, ring_ids, summary_types, colors, markers, metric_label, value_label, show_legend=False):
@@ -312,7 +312,7 @@ def plot_radial_histograms(summary_csv_path, output_path=None, output_name=None)
     }
     
     for row_index, (mode_name, _, mode_label) in enumerate(plot_modes):
-        show_legend = row_index == 0
+        show_legend = (row_index == 0) and ('weighted' in summary_types and 'normal' in summary_types)
         _plot_metric_panel(
             axes[row_index, 0],
             panel_data[mode_name]['physical'],

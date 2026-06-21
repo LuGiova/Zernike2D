@@ -111,6 +111,10 @@ class ComplementaryPlane:
         iterator = tqdm.tqdm(indices, desc='Zernike', disable=not verbose)
         for i, ndx in enumerate(iterator):
             surf_mod = surface[base_cols].copy()
+            # Ensure numeric types (important when surface is loaded from CSV or other sources)
+            for col in base_cols:
+                surf_mod[col] = pd.to_numeric(surf_mod[col], errors='coerce')
+            
             ax = axes_vectors[i]
             if not np.allclose(ax, 0):
                 axn = ax / np.linalg.norm(ax)
@@ -479,11 +483,11 @@ class ComplementaryPlane:
 
 
 def _split_complex_stem(stem):
-    """Return (complex_name, chain_tag) from a stem like MY_COMPLEX_A."""
+    """Return (complex_name, chain_tag) from a stem like MY_COMPLEX_A or MY_COMPLEX_1."""
     if '_' not in stem:
         return stem, ''
     complex_name, chain_tag = stem.rsplit('_', 1)
-    if len(chain_tag) == 1 and chain_tag.isalpha():
+    if len(chain_tag) == 1 and (chain_tag.isalpha() or chain_tag.isdigit()):
         return complex_name, chain_tag
     return stem, ''
 

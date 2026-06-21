@@ -38,14 +38,14 @@ def _normalize_stem(summary_path: Path) -> str:
 def _resolve_output_path(summary_path: Path, output_path: str | Path | None = None, output_name: str | None = None) -> Path:
     default_stem = output_name or f'{_normalize_stem(summary_path)}_histograms'
     if output_path is None:
-        return summary_path.parent / f'{default_stem}.png'
+        return summary_path.parent / f'{default_stem}.pdf'
 
     output_path = Path(output_path)
     if output_path.exists() and output_path.is_dir():
-        return output_path / f'{default_stem}.png'
+        return output_path / f'{default_stem}.pdf'
     if output_path.suffix:
         return output_path.with_name(f'{default_stem}{output_path.suffix}') if output_name else output_path
-    return output_path / f'{default_stem}.png'
+    return output_path / f'{default_stem}.pdf'
 
 
 def _finite_series(df: pd.DataFrame, column: str, summary_type: str | None = None) -> np.ndarray:
@@ -86,7 +86,7 @@ def _plot_single_hist(ax, values, title, xlabel, color='#4c78a8', alpha=0.6):
     ax.grid(axis='y', alpha=0.25, linestyle='--')
 
 
-def _plot_overlay_hist(ax, values_weighted, values_normal, title, xlabel):
+def _plot_overlay_hist(ax, values_weighted, values_normal, title, xlabel, show_legend=True):
     bins = _hist_bins(values_weighted, values_normal)
     ax.hist(
         values_weighted,
@@ -109,7 +109,8 @@ def _plot_overlay_hist(ax, values_weighted, values_normal, title, xlabel):
     ax.set_title(title, fontweight='bold')
     ax.set_xlabel(xlabel)
     ax.set_ylabel('Count')
-    ax.legend(title='Summary type', fontsize=9, loc='best')
+    if show_legend:
+        ax.legend(title='Summary type', fontsize=9, loc='best')
     ax.grid(axis='y', alpha=0.25, linestyle='--')
 
 
@@ -128,6 +129,9 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
 
     fig, axes = plt.subplots(3, 2, figsize=(16, 14))
     axes = axes.reshape(3, 2)
+    
+    # Check if both weighted and normal data are present
+    has_both_types = 'weighted' in df['summary_type'].values and 'normal' in df['summary_type'].values
 
     # First row: single histograms from normal rows only.
     gyration_values = _finite_series(df, 'gyration_radius', summary_type='normal')
@@ -135,7 +139,7 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
     _plot_single_hist(
         axes[0, 0],
         gyration_values,
-        'Gyration Radius (normal only)',
+        'Gyration Radius',
         'Gyration Radius',
         color='#2ca02c',
         alpha=0.70,
@@ -143,21 +147,21 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
     _plot_single_hist(
         axes[0, 1],
         flatness_values,
-        'Flatness (normal only)',
+        'Flatness',
         'Flatness',
         color='#9467bd',
         alpha=0.70,
     )
 
-    # Second row: weighted vs normal.
-    roughness_weighted = _finite_series(df, 'roughness', summary_type='weighted')
-    roughness_normal = _finite_series(df, 'roughness', summary_type='normal')
-    _plot_overlay_hist(
+    # Second row: roughness (single histogram, normal only) and scalar_prod (weighted vs normal).
+    roughness_values = _finite_series(df, 'roughness', summary_type='normal')
+    _plot_single_hist(
         axes[1, 0],
-        roughness_weighted,
-        roughness_normal,
+        roughness_values,
         'Roughness',
         'Roughness',
+        color='#d62728',
+        alpha=0.70,
     )
 
     scalar_weighted = _finite_series(df, 'scalar_prod', summary_type='weighted')
@@ -168,6 +172,7 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
         scalar_normal,
         'Scalar Product',
         'Scalar Product',
+        show_legend=has_both_types,
     )
 
     # Third row: scalar_prod_uncertainty weighted vs normal; left panel for readability, right panel hidden.
@@ -179,6 +184,7 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
         scalar_unc_normal,
         'Scalar Product Uncertainty',
         'Scalar Product Uncertainty',
+        show_legend=has_both_types,
     )
     axes[2, 1].axis('off')
 

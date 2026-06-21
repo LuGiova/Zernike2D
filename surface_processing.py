@@ -47,10 +47,16 @@ def read_pdb_atoms(pdb_path):
 # Source repository: https://github.com/matmi8/Zernike2D.git
 def parse_dms_surface(dms_path):
     colnames = [character for character in range_char('A', 'K')]
-    dms_surf = pd.read_csv(dms_path, names=colnames, header=None, delimiter=r'\s+')
+    
+    # Read DMS with flexible column handling for robustness
+    # Some DMS files have variable formatting that creates extra fields
+    dms_surf = pd.read_csv(dms_path, names=colnames, header=None, delimiter=r'\s+', 
+                           usecols=list(range(len(colnames))))
+
+    # Clean only residue identifier columns so numeric columns keep their decimals
+    dms_surf[['A', 'B', 'C']] = dms_surf[['A', 'B', 'C']].astype(str).replace(r'[^\w\s]|_', '', regex=True)
 
     df = (dms_surf
-          .replace(r'[^\w\s]|_', '', regex=True)
           .assign(res=np.where(
               dms_surf['B'].astype(str).str[-1].str.isnumeric(),
               dms_surf['A'].astype(str) + '_' +
