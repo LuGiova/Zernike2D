@@ -31,6 +31,94 @@ ALPHAS = {
 }
 
 
+def _pairwise_correlation(
+    df: pd.DataFrame,
+    metric_a: str,
+    metric_b: str,
+    summary_type: str | None = None,
+) -> tuple[float | None, float | None]:
+    if metric_a not in df.columns or metric_b not in df.columns:
+        return None, None
+
+    subset = df
+    if summary_type is not None and 'summary_type' in df.columns:
+        subset = subset[subset['summary_type'] == summary_type]
+
+    pair_df = pd.DataFrame(
+        {
+            metric_a: pd.to_numeric(subset[metric_a], errors='coerce'),
+            metric_b: pd.to_numeric(subset[metric_b], errors='coerce'),
+        }
+    ).dropna()
+
+    if len(pair_df) < 2:
+        return None, None
+
+    pearson = pair_df[metric_a].corr(pair_df[metric_b], method='pearson')
+    spearman = pair_df[metric_a].corr(pair_df[metric_b], method='spearman')
+
+    if pd.isna(pearson):
+        pearson = None
+    if pd.isna(spearman):
+        spearman = None
+    return pearson, spearman
+
+
+def _correlation_label(
+    df: pd.DataFrame,
+    metric: str,
+    other_metrics: list[str],
+    summary_type: str | None = 'normal',
+    title_suffix: str | None = None,
+) -> str:
+    lines = []
+    if title_suffix:
+        lines.append(title_suffix)
+
+    for other in other_metrics:
+        pearson, spearman = _pairwise_correlation(df, metric, other, summary_type=summary_type)
+        pretty_other = other.replace('_', ' ')
+        if pearson is None or spearman is None:
+            lines.append(f'{pretty_other}: P=n/a, S=n/a')
+        else:
+            lines.append(f'{pretty_other}: P={pearson:.2f}, S={spearman:.2f}')
+
+    return 'Corr. with others\n' + '\n'.join(lines)
+
+
+def _add_correlation_box(ax, label: str) -> None:
+    ax.text(
+        0.98,
+        0.98,
+        label,
+        transform=ax.transAxes,
+        va='top',
+        ha='right',
+        fontsize=8,
+        bbox={'boxstyle': 'round', 'facecolor': 'white', 'alpha': 0.8, 'edgecolor': '#666666'},
+    )
+
+
+def _scalar_correlation_label(df: pd.DataFrame, other_metrics: list[str], has_both_types: bool) -> str:
+    lines = ['Corr. with others']
+    summary_types = ['normal', 'weighted'] if has_both_types else [None]
+
+    for summary_type in summary_types:
+        for other in other_metrics:
+            pearson, spearman = _pairwise_correlation(df, 'scalar_prod', other, summary_type=summary_type)
+            pretty_other = other.replace('_', ' ')
+            type_prefix = ''
+            if has_both_types and summary_type is not None:
+                type_prefix = f'[{summary_type}] '
+
+            if pearson is None or spearman is None:
+                lines.append(f'{type_prefix}{pretty_other}: P=n/a, S=n/a')
+            else:
+                lines.append(f'{type_prefix}{pretty_other}: P={pearson:.2f}, S={spearman:.2f}')
+
+    return '\n'.join(lines)
+
+
 def _normalize_stem(summary_path: Path) -> str:
     return summary_path.stem.replace('_summary', '')
 
@@ -86,7 +174,7 @@ def _plot_single_hist(ax, values, title, xlabel, color='#4c78a8', alpha=0.6):
     ax.grid(axis='y', alpha=0.25, linestyle='--')
 
 
-def _plot_overlay_hist(ax, values_weighted, values_normal, title, xlabel, show_legend=True):
+def _plot_overlay_hist(ax, values_weighted, values_normal, title, xlabel, show_legend=True, legend_loc='best'):
     bins = _hist_bins(values_weighted, values_normal)
     ax.hist(
         values_weighted,
@@ -110,7 +198,7 @@ def _plot_overlay_hist(ax, values_weighted, values_normal, title, xlabel, show_l
     ax.set_xlabel(xlabel)
     ax.set_ylabel('Count')
     if show_legend:
-        ax.legend(title='Summary type', fontsize=9, loc='best')
+        ax.legend(title='Summary type', fontsize=9, loc=legend_loc)
     ax.grid(axis='y', alpha=0.25, linestyle='--')
 
 
@@ -127,8 +215,8 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
     print(f'  Shape: {df.shape}')
     print(f"  Summary types: {df['summary_type'].dropna().unique().tolist()}")
 
-    fig, axes = plt.subplots(3, 2, figsize=(16, 14))
-    axes = axes.reshape(3, 2)
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+    axes = axes.reshape(2, 2)
     
     # Check if both weighted and normal data are present
     has_both_types = 'weighted' in df['summary_type'].values and 'normal' in df['summary_type'].values
@@ -144,6 +232,10 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
         color='#2ca02c',
         alpha=0.70,
     )
+    _add_correlation_box(
+        axes[0, 0],
+        _correlation_label(df, 'gyration_radius', ['flatness', 'roughness', 'scalar_prod']),
+    )
     _plot_single_hist(
         axes[0, 1],
         flatness_values,
@@ -151,6 +243,10 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
         'Flatness',
         color='#9467bd',
         alpha=0.70,
+    )
+    _add_correlation_box(
+        axes[0, 1],
+        _correlation_label(df, 'flatness', ['gyration_radius', 'roughness', 'scalar_prod']),
     )
 
     # Second row: roughness (single histogram, normal only) and scalar_prod (weighted vs normal).
@@ -163,6 +259,10 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
         color='#d62728',
         alpha=0.70,
     )
+    _add_correlation_box(
+        axes[1, 0],
+        _correlation_label(df, 'roughness', ['gyration_radius', 'flatness', 'scalar_prod']),
+    )
 
     scalar_weighted = _finite_series(df, 'scalar_prod', summary_type='weighted')
     scalar_normal = _finite_series(df, 'scalar_prod', summary_type='normal')
@@ -173,20 +273,12 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
         'Scalar Product',
         'Scalar Product',
         show_legend=has_both_types,
+        legend_loc='upper left',
     )
-
-    # Third row: scalar_prod_uncertainty weighted vs normal; left panel for readability, right panel hidden.
-    scalar_unc_weighted = _finite_series(df, 'scalar_prod_uncertainty', summary_type='weighted')
-    scalar_unc_normal = _finite_series(df, 'scalar_prod_uncertainty', summary_type='normal')
-    _plot_overlay_hist(
-        axes[2, 0],
-        scalar_unc_weighted,
-        scalar_unc_normal,
-        'Scalar Product Uncertainty',
-        'Scalar Product Uncertainty',
-        show_legend=has_both_types,
+    _add_correlation_box(
+        axes[1, 1],
+        _scalar_correlation_label(df, ['gyration_radius', 'flatness', 'roughness'], has_both_types),
     )
-    axes[2, 1].axis('off')
 
     fig.suptitle(f'Global Metric Histograms ({_normalize_stem(summary_path)})', fontsize=15, fontweight='bold', y=0.995)
     fig.tight_layout()
