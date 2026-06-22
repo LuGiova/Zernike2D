@@ -767,7 +767,7 @@ def _run_batch(args):
             finally:
                 for future in futures:
                     future.cancel()
-                executor.shutdown(wait=False)
+                executor.shutdown(wait=True)
     finally:
         progress.close()
         gc.collect()
