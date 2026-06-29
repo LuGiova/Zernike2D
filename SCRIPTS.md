@@ -71,7 +71,9 @@ Effect of `-n`:
 - Actual count is limited by availability in both ring subsets.
 
 Summary behavior:
-- Produces **two summary rows**:
+- Produces **one summary row** by default:
+	- `normal`: arithmetic mean with standard error
+- Produces **two summary rows** only when `--weighted` is set:
 	- `weighted`: inverse-density weighted means/uncertainties (KDE-based)
 	- `normal`: arithmetic mean with standard error
 
@@ -181,6 +183,7 @@ Optional:
 - `-t/--threshold` (float, default `5.0`)
 - `-n/--points` (int, default `100`)
 - `--sampling-strategy` (`default`, `angular_cells`, `kmeans`)
+- `--weighted` (only for `default` sampling; also writes the weighted summary row)
 - `--output-name` (custom stem)
 - `--csv` (write detailed per-pair CSV)
 - `-p/--plot` (write polar plot PNG)
@@ -193,7 +196,7 @@ python get_complementary_plane.py \
 	-sf1 ./input_files/1a1u_A.csv \
 	-sf2 ./input_files/1a1u_C.csv \
 	-o ./output_files/default \
-	-t 5.0 -n 100 --sampling-strategy default --csv -p --verbose
+	-t 5.0 -n 100 --sampling-strategy default --weighted --csv -p --verbose
 ```
 
 ### Batch mode with directory
@@ -220,8 +223,9 @@ Additional batch options:
 
 - The zip is scanned recursively.
 - Only `.pdb` members are considered.
-- Files are grouped by complex stem using `COMPLEX_CHAIN` parsing:
-	- examples: `MYSET/1abc_A.pdb`, `1abc_B.pdb` are grouped under `1abc`.
+- Files are grouped by complex stem using the last underscore (the principal protein chain) as separator:
+	- examples (native complex): `1abc_A.pdb`, `1abc_B.pdb` are grouped under `1abc`
+	- examples (decoy): `1abc-1_A.pdb`, `1abc-1_B.pdb` are grouped under `1abc-1`
 - Groups with anything other than exactly 2 files are skipped.
 
 ### Execution model
@@ -235,7 +239,8 @@ Additional batch options:
 
 - Existing summary is parsed to detect already completed complexes.
 - Expected rows per complex depend on strategy:
-	- `default`: 2 rows (`weighted`, `normal`)
+	- `default` + `--weighted`: 2 rows (`weighted`, `normal`)
+	- `default` without `--weighted`: 1 row (`normal`)
 	- others: 1 row (`normal`)
 - If a previous summary looks partial/corrupted, backup files are created and active summary is cleaned.
 - Failed complexes are appended to `<output>/batch_failures.csv`.
@@ -315,6 +320,7 @@ Global columns:
 - `scalar_prod`
 - `scalar_prod_uncertainty`
 - `summary_type` (`weighted` or `normal`)
+- `radius` (outer binding-site circle radius)
 
 In batch summary, extra leading columns are added:
 - `complex_name`

@@ -76,6 +76,9 @@ def build_cli_complementary_plane2():
                           default='default',
                           help="string; sampling strategy: 'default' (current), 'angular_cells', or 'kmeans' (default: default)",
                           metavar="")
+    optional.add_argument("--weighted",
+                          action='store_true',
+                          help="boolean; when sampling strategy is default, also compute weighted summary rows")
     optional.add_argument("-h", "--help",
                           action="help",
                           help="show this help message and exit")

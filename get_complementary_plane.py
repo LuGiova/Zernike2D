@@ -129,7 +129,7 @@ class ComplementaryPlane:
             print('Finished Zernike descriptors with custom axes')
         return sampled_surface, coeff_array
 
-    def compute(self, plot=False, save_csv=False, save_summary=True):
+    def compute(self, plot=False, save_csv=False, save_summary=True, weighted_summary=False):
         """Compute complementary-plane metrics.
 
         Parameters
@@ -352,7 +352,7 @@ class ComplementaryPlane:
 
         # Choose which summary types to compute based on sampling strategy
         if self.sampling_strategy == 'default':
-            summary_types = ('weighted', 'normal')
+            summary_types = ('weighted', 'normal') if weighted_summary else ('normal',)
         else:
             summary_types = ('normal',)
 
@@ -395,6 +395,7 @@ class ComplementaryPlane:
             row['scalar_prod'] = scalar_mean
             row['scalar_prod_uncertainty'] = scalar_unc
             row['summary_type'] = summary_type
+            row['radius'] = circle_radius
             summary_rows.append(row)
 
         summary_df = pd.DataFrame(summary_rows)
@@ -418,6 +419,7 @@ class ComplementaryPlane:
             'scalar_prod',
             'scalar_prod_uncertainty',
             'summary_type',
+            'radius',
         ])
         summary_df = summary_df[summary_column_order]
 
@@ -483,11 +485,11 @@ class ComplementaryPlane:
 
 
 def _split_complex_stem(stem):
-    """Return (complex_name, chain_tag) from a stem like MY_COMPLEX_A or MY_COMPLEX_1."""
+    """Return (complex_name, chain_tag) from stems like MY_COMPLEX_A, MY_COMPLEX_1, or MY_COMPLEX-1_A1."""
     if '_' not in stem:
         return stem, ''
     complex_name, chain_tag = stem.rsplit('_', 1)
-    if len(chain_tag) == 1 and (chain_tag.isalpha() or chain_tag.isdigit()):
+    if chain_tag and chain_tag.isalnum():
         return complex_name, chain_tag
     return stem, ''
 
@@ -547,8 +549,10 @@ def _discover_pdb_pairs_from_zip(batch_zip):
     return tasks, skipped
 
 
-def _expected_summary_rows(sampling_strategy):
-    return 2 if sampling_strategy == 'default' else 1
+def _expected_summary_rows(sampling_strategy, weighted_summary=False):
+    if sampling_strategy == 'default' and weighted_summary:
+        return 2
+    return 1
 
 
 def _prepare_resume_summary(summary_path, expected_rows, force=False):
@@ -650,6 +654,7 @@ def _run_complex_task(task, options):
                     plot=options['plot'],
                     save_csv=options['csv'],
                     save_summary=False,
+                    weighted_summary=bool(options['weighted_summary']),
                 )
                 summary_df.insert(0, 'complex_name', complex_name)
                 summary_df.insert(1, 'protein1_file', Path(surface1).name)
@@ -686,7 +691,7 @@ def _run_batch(args):
 
     summary_path = Path(args.batch_summary) if args.batch_summary else output_dir / 'batch_summary.csv'
     failure_path = output_dir / 'batch_failures.csv'
-    expected_rows = _expected_summary_rows(args.sampling_strategy)
+    expected_rows = _expected_summary_rows(args.sampling_strategy, weighted_summary=args.weighted)
     completed = _prepare_resume_summary(summary_path, expected_rows, force=args.force)
 
     pending = [task for task in tasks if task['complex_name'] not in completed]
@@ -709,6 +714,7 @@ def _run_batch(args):
         'threshold': args.threshold,
         'points': args.points,
         'sampling_strategy': args.sampling_strategy,
+        'weighted_summary': args.weighted,
         'plot': args.plot,
         'csv': args.csv,
         'verbose': args.verbose,
@@ -795,10 +801,12 @@ def main():
         sampling_strategy=getattr(args, 'sampling_strategy', 'default'),
         verbose=getattr(args, 'verbose', False),
     )
+    calculator.weighted_summary = bool(getattr(args, 'weighted', False))
     calculator.compute(
         plot=args.plot,
         save_csv=getattr(args, 'csv', False),
         save_summary=True,
+        weighted_summary=bool(getattr(args, 'weighted', False)),
     )
 
 
