@@ -188,42 +188,68 @@ def _resolve_output_path(summary_path, output_path=None, output_name=None):
     return output_path / f'{default_stem}.pdf'
 
 
-def _plot_metric_panel(ax, metric_data, ring_ids, summary_types, colors, markers, metric_label, value_label, show_legend=False):
+def _display_name_from_summary_path(summary_path):
+    name = Path(summary_path).name
+    if name.endswith('_summary.csv'):
+        return name[:-len('_summary.csv')]
+    stem = Path(name).stem
+    return stem[:-len('_summary')] if stem.endswith('_summary') else stem
+
+
+def _plot_metric_panel(
+    ax,
+    metric_data_by_source,
+    ring_ids,
+    summary_types,
+    colors,
+    markers,
+    metric_label,
+    value_label,
+    source_labels=None,
+):
     x_positions = np.arange(len(ring_ids))
-    offset_step = 0.18 / max(len(summary_types), 1)
+    source_count = len(metric_data_by_source)
+    offset_step = 0.18 / max(len(summary_types) * max(source_count, 1), 1)
     uncertainty_scale = 3.0
+    source_styles = [
+        {'marker': 's', 'color': '#1f77b4'},
+        {'marker': 'o', 'color': '#ff7f0e'},
+    ]
 
-    for type_idx, summary_type in enumerate(summary_types):
-        ring_values = metric_data[summary_type]
-        means = np.array([ring_values[rid]['mean'] for rid in ring_ids], dtype=float)
-        sample_uncertainties = np.array([ring_values[rid]['sample_uncertainty'] for rid in ring_ids], dtype=float)
-        combined_uncertainties = np.array([ring_values[rid]['combined_uncertainty'] for rid in ring_ids], dtype=float)
+    for source_idx, metric_data in enumerate(metric_data_by_source):
+        source_style = source_styles[source_idx % len(source_styles)]
+        for type_idx, summary_type in enumerate(summary_types):
+            ring_values = metric_data[summary_type]
+            means = np.array([ring_values[rid]['mean'] for rid in ring_ids], dtype=float)
+            combined_uncertainties = np.array([ring_values[rid]['combined_uncertainty'] for rid in ring_ids], dtype=float)
 
-        x_offset = (type_idx - len(summary_types) / 2 + 0.5) * offset_step
-        x_pos = x_positions + x_offset
-        color = colors.get(summary_type, '#444444')
-        ax.errorbar(
-            x_pos,
-            means,
-            yerr=combined_uncertainties * uncertainty_scale,
-            fmt='none',
-            ecolor=color,
-            elinewidth=1.8,
-            capsize=4,
-            capthick=1.4,
-            zorder=2,
-        )
-        ax.scatter(
-            x_pos,
-            means,
-            s=18,
-            marker=markers.get(summary_type, 'o'),
-            color=color,
-            edgecolors='black',
-            linewidth=0.8,
-            alpha=0.95,
-            zorder=3,
-        )
+            x_offset = ((source_idx * len(summary_types)) + type_idx - (source_count * len(summary_types)) / 2 + 0.5) * offset_step
+            x_pos = x_positions + x_offset
+            color = source_style['color']
+            marker = source_style['marker']
+
+            ax.errorbar(
+                x_pos,
+                means,
+                yerr=combined_uncertainties * uncertainty_scale,
+                fmt='none',
+                ecolor=color,
+                elinewidth=1.8,
+                capsize=4,
+                capthick=1.4,
+                zorder=2,
+            )
+            ax.scatter(
+                x_pos,
+                means,
+                s=18,
+                marker=marker,
+                facecolors=color,
+                edgecolors='black',
+                linewidth=0.8,
+                alpha=0.95,
+                zorder=3,
+            )
 
     ax.set_xlabel('Ring ID', fontsize=12, fontweight='bold')
     ax.set_ylabel(value_label, fontsize=12, fontweight='bold')
@@ -232,24 +258,27 @@ def _plot_metric_panel(ax, metric_data, ring_ids, summary_types, colors, markers
     ax.set_xticklabels([f'{r}' for r in ring_ids])
     ax.grid(axis='y', alpha=0.3, linestyle='--')
 
-    if show_legend:
-        summary_handles = [
-            Line2D(
-                [0], [0],
-                marker=markers.get(summary_type, 'o'),
-                linestyle='none',
-                markerfacecolor=colors.get(summary_type, '#444444'),
-                markeredgecolor='black',
-                markersize=8,
-                label=summary_type,
+    if source_labels and len(source_labels) > 1:
+        source_handles = []
+        for source_index, source_label in enumerate(source_labels):
+            marker = source_styles[source_index % len(source_styles)]['marker']
+            color = source_styles[source_index % len(source_styles)]['color']
+            source_handles.append(
+                Line2D(
+                    [0], [0],
+                    marker=marker,
+                    linestyle='none',
+                    markerfacecolor=color,
+                    markeredgecolor='black',
+                    markersize=8,
+                    label=source_label,
+                )
             )
-            for summary_type in summary_types
-        ]
-        legend1 = ax.legend(handles=summary_handles, fontsize=10, loc='best')
-        ax.add_artist(legend1)
+        plt.sca(ax)
+        plt.legend(handles=source_handles, fontsize=10, loc='best', title='file')
 
 
-def plot_radial_histograms(summary_csv_path, output_path=None, output_name=None):
+def plot_radial_histograms(summary_csv_path, output_path=None, output_name=None, compare_summary_csv_path=None):
     """
     Create two subplots showing ring-by-ring histograms with uncertainties
     for physical and zernike distances.
@@ -262,22 +291,33 @@ def plot_radial_histograms(summary_csv_path, output_path=None, output_name=None)
         Output path for the plot. If None, uses same stem as input with .png
     """
     
-    summary_path = Path(summary_csv_path)
-    if not summary_path.exists():
-        raise FileNotFoundError(f"Summary file not found: {summary_path}")
+    summary_paths = [Path(summary_csv_path)]
+    if compare_summary_csv_path is not None:
+        summary_paths.append(Path(compare_summary_csv_path))
+
+    for summary_path in summary_paths:
+        if not summary_path.exists():
+            raise FileNotFoundError(f"Summary file not found: {summary_path}")
     
-    # Read summary CSV
-    df_summary = pd.read_csv(summary_path)
-    print(f"✓ Loaded summary from {summary_path}")
-    print(f"  Shape: {df_summary.shape}")
-    print(f"  Summary types: {df_summary['summary_type'].unique().tolist()}")
+    df_summaries = [pd.read_csv(summary_path) for summary_path in summary_paths]
+    for summary_path, df_summary in zip(summary_paths, df_summaries):
+        print(f"✓ Loaded summary from {summary_path}")
+        print(f"  Shape: {df_summary.shape}")
+        print(f"  Summary types: {df_summary['summary_type'].unique().tolist()}")
     
     # Extract ring IDs from columns
-    ring_ids = _ring_ids_from_columns(df_summary.columns, 'physical_ring')
+    ring_ids = _ring_ids_from_columns(df_summaries[0].columns, 'physical_ring')
     print(f"  Number of rings: {len(ring_ids)}")
     
-    summary_types = _ordered_summary_types(df_summary['summary_type'].dropna().unique().tolist())
-    print(f"  Aggregating over {len(df_summary)} rows and {df_summary['complex_name'].nunique() if 'complex_name' in df_summary.columns else 'unknown'} complexes")
+    summary_types = _ordered_summary_types(
+        sorted({summary_type for df_summary in df_summaries for summary_type in df_summary['summary_type'].dropna().unique().tolist()})
+    )
+    for summary_path, df_summary in zip(summary_paths, df_summaries):
+        print(f"  Aggregating over {len(df_summary)} rows and {df_summary['complex_name'].nunique() if 'complex_name' in df_summary.columns else 'unknown'} complexes from {summary_path.name}")
+
+    source_labels = [_display_name_from_summary_path(summary_path) for summary_path in summary_paths]
+    print(f"  Plot sources: {source_labels}")
+    plot_title = ', '.join(source_labels)
 
     plot_modes = [
         ('raw', None, 'Raw ring values'),
@@ -287,16 +327,23 @@ def plot_radial_histograms(summary_csv_path, output_path=None, output_name=None)
 
     panel_data = {}
     for mode_name, normalization_mode, mode_label in plot_modes:
-        physical_data = _aggregate_metric_by_summary_type(df_summary, summary_types, ring_ids, 'physical', normalization_mode=normalization_mode)
-        zernike_data = _aggregate_metric_by_summary_type(df_summary, summary_types, ring_ids, 'zernike', normalization_mode=normalization_mode)
+        physical_data = [
+            _aggregate_metric_by_summary_type(df_summary, summary_types, ring_ids, 'physical', normalization_mode=normalization_mode)
+            for df_summary in df_summaries
+        ]
+        zernike_data = [
+            _aggregate_metric_by_summary_type(df_summary, summary_types, ring_ids, 'zernike', normalization_mode=normalization_mode)
+            for df_summary in df_summaries
+        ]
         panel_data[mode_name] = {
             'label': mode_label,
             'physical': physical_data,
             'zernike': zernike_data,
         }
-        for summary_type in summary_types:
-            counts = [physical_data[summary_type][rid]['count'] for rid in ring_ids]
-            print(f"  {mode_name} / {summary_type}: ring sample counts {counts}")
+        for summary_index, summary_type in enumerate(summary_types):
+            for source_index, source_label in enumerate(source_labels):
+                counts = [panel_data[mode_name]['physical'][source_index][summary_type][rid]['count'] for rid in ring_ids]
+                print(f"  {mode_name} / {source_label} / {summary_type}: ring sample counts {counts}")
 
     # Create figure with three rows and two columns
     fig, axes = plt.subplots(len(plot_modes), 2, figsize=(16, 18), sharex=True)
@@ -312,7 +359,7 @@ def plot_radial_histograms(summary_csv_path, output_path=None, output_name=None)
     }
     
     for row_index, (mode_name, _, mode_label) in enumerate(plot_modes):
-        show_legend = (row_index == 0) and ('weighted' in summary_types and 'normal' in summary_types)
+        physical_ylabel = 'Physical Distance (Å)' if mode_name == 'raw' else 'Physical Distance'
         _plot_metric_panel(
             axes[row_index, 0],
             panel_data[mode_name]['physical'],
@@ -321,8 +368,8 @@ def plot_radial_histograms(summary_csv_path, output_path=None, output_name=None)
             colors,
             markers,
             f'{mode_label} - Physical Distance per Ring',
-            'Physical Distance (Å)',
-            show_legend=show_legend,
+            physical_ylabel,
+            source_labels=source_labels,
         )
         _plot_metric_panel(
             axes[row_index, 1],
@@ -333,7 +380,7 @@ def plot_radial_histograms(summary_csv_path, output_path=None, output_name=None)
             markers,
             f'{mode_label} - Zernike Distance per Ring',
             'Zernike Distance',
-            show_legend=False,
+            source_labels=source_labels,
         )
 
         if row_index == 0:
@@ -353,7 +400,7 @@ def plot_radial_histograms(summary_csv_path, output_path=None, output_name=None)
             fontweight='bold',
         )
 
-    fig.suptitle(f'Radial Functions with Uncertainties ({summary_path.stem})',
+    fig.suptitle(f'Radial Functions with Uncertainties ({plot_title})',
                  fontsize=14, fontweight='bold', y=0.995)
     fig.tight_layout()
     
@@ -371,13 +418,14 @@ def main():
         description='Plot radial function histograms with uncertainties from summary CSV'
     )
     parser.add_argument('summary_csv', help='Path to summary.csv from get_complementary_plane2.py')
+    parser.add_argument('--compare-summary-csv', help='Optional second summary CSV to plot on the same figure')
     parser.add_argument('-o', '--output', help='Output path for plot (default: <stem>_radial_histograms.png)')
     parser.add_argument('--output-name', help='Output file name without extension (default: <summary>_radial_histograms)')
     
     args = parser.parse_args()
     
     try:
-        plot_radial_histograms(args.summary_csv, args.output, args.output_name)
+        plot_radial_histograms(args.summary_csv, args.output, args.output_name, args.compare_summary_csv)
     except Exception as e:
         print(f"✗ Error: {e}", file=sys.stderr)
         sys.exit(1)
