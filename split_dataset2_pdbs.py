@@ -5,8 +5,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
+import os
 import tarfile
 import zipfile
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import contextmanager
 from collections import Counter
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -23,6 +27,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("archive", help="Path to dataset2.tar.gz")
     parser.add_argument("-o", "--output", required=True, help="Output zip path")
+    parser.add_argument("-j", "--workers", type=int, default=1, help="Number of worker processes to use")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     return parser.parse_args()
 
 
@@ -60,7 +66,7 @@ def parse_remarks(lines: list[str]) -> tuple[str, str, str]:
 
 
 def split_blocks(lines: list[str]) -> list[list[str]]:
-    blocks: list[list[str]] = []
+    raw_segments: list[list[str]] = []
     current: list[str] = []
 
     for line in lines:
@@ -69,17 +75,36 @@ def split_blocks(lines: list[str]) -> list[list[str]]:
             continue
         if line.startswith("TER"):
             if current:
-                blocks.append(current)
+                raw_segments.append(current)
                 current = []
             continue
         if line.startswith(("ENDMDL", "END")):
             break
 
     if current:
-        blocks.append(current)
+        raw_segments.append(current)
+
+    if not raw_segments:
+        raise ValueError("No ATOM/HETATM segments found")
+
+    # Merge adjacent TER-separated segments that continue the same chain,
+    # preserving the internal TER marker in the merged output block.
+    blocks: list[list[str]] = []
+    block_chain_labels: list[str] = []
+    for segment in raw_segments:
+        segment_chain = choose_chain_label(segment)
+        if blocks and block_chain_labels[-1] == segment_chain:
+            blocks[-1].append("TER")
+            blocks[-1].extend(segment)
+        else:
+            blocks.append(segment[:])
+            block_chain_labels.append(segment_chain)
 
     if len(blocks) != 2:
-        raise ValueError(f"Expected exactly 2 protein blocks separated by TER, found {len(blocks)}")
+        raise ValueError(
+            f"Expected exactly 2 protein blocks after chain-aware TER merge, found {len(blocks)} "
+            f"(raw segments: {len(raw_segments)})"
+        )
 
     return blocks
 
@@ -93,7 +118,9 @@ def chain_id_from_atom_line(line: str) -> str:
 
 
 def choose_chain_label(block: list[str]) -> str:
-    chain_ids = [chain_id_from_atom_line(line) for line in block]
+    chain_ids = [chain_id_from_atom_line(line) for line in block if line.startswith(("ATOM", "HETATM"))]
+    if not chain_ids:
+        return "_"
     counts = Counter(chain_ids)
     ordered = []
     seen = set()
@@ -110,6 +137,72 @@ def build_clean_pdb(block: list[str]) -> str:
 
 
 def process_archive(archive_path: Path) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
+    # This function will be run in the main process and will dispatch per-member
+    # work to worker processes when requested.
+    raise NotImplementedError("process_archive should be called with workers via process_archive_with_workers")
+
+
+@contextmanager
+def _suppress_worker_output(enabled: bool):
+    if not enabled:
+        yield
+        return
+    stdout_fd = os.dup(1)
+    stderr_fd = os.dup(2)
+    try:
+        with open(os.devnull, "wb") as devnull:
+            os.dup2(devnull.fileno(), 1)
+            os.dup2(devnull.fileno(), 2)
+            yield
+    finally:
+        os.dup2(stdout_fd, 1)
+        os.dup2(stderr_fd, 2)
+        os.close(stdout_fd)
+        os.close(stderr_fd)
+
+
+def _run_member_task(member_name: str, archive_path: str, verbose: bool):
+    """Worker: process one PDB member inside the tar.gz archive."""
+    try:
+        with _suppress_worker_output(not verbose):
+            with tarfile.open(archive_path, "r:gz") as tar:
+                member = tar.getmember(member_name)
+                extracted = tar.extractfile(member)
+                if extracted is None:
+                    raise ValueError(f"Could not extract {member_name}")
+                text = extracted.read().decode("utf-8", errors="replace")
+                lines = text.splitlines()
+
+            complex_name, fallback_decoy = parse_pdb_name(member_name)
+            decoy, contact, score, rmsd = parse_remarks(lines)
+            if not decoy:
+                decoy = fallback_decoy
+
+            blocks = split_blocks(lines)
+            pdb_outs: list[tuple[str, str]] = []
+            output_names: list[str] = []
+            for block in blocks:
+                chain_label = choose_chain_label(block)
+                output_name = f"{complex_name}-{decoy}_{chain_label}.pdb"
+                pdb_outs.append((output_name, build_clean_pdb(block)))
+                output_names.append(output_name)
+
+            summary_row = {
+                "complex_name": complex_name,
+                "decoy": decoy,
+                "contact": contact,
+                "score": score,
+                "rmsd": rmsd,
+                "protein_1_pdb": output_names[0],
+                "protein_2_pdb": output_names[1],
+            }
+
+        return {"ok": True, "member": member_name, "pdb_outputs": pdb_outs, "summary_row": summary_row}
+    except Exception as exc:
+        return {"ok": False, "member": member_name, "error": repr(exc)}
+
+
+def process_archive_with_workers(archive_path: Path, workers: int = 1, verbose: bool = False) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
     pdb_outputs: list[tuple[str, str]] = []
     summary_rows: list[dict[str, str]] = []
 
@@ -118,39 +211,45 @@ def process_archive(archive_path: Path) -> tuple[list[tuple[str, str]], list[dic
         if not members:
             raise ValueError(f"No PDB files found in {archive_path}")
 
-        for member in tqdm.tqdm(sorted(members, key=lambda item: item.name), desc="Splitting complexes", unit="pdb"):
-            extracted = tar.extractfile(member)
-            if extracted is None:
-                continue
+    sorted_members = sorted(members, key=lambda item: item.name)
 
-            text = extracted.read().decode("utf-8", errors="replace")
-            lines = text.splitlines()
+    bar = tqdm.tqdm(total=len(sorted_members), desc="Splitting complexes", unit="pdb", disable=verbose)
 
-            complex_name, fallback_decoy = parse_pdb_name(member.name)
-            decoy, contact, score, rmsd = parse_remarks(lines)
-            if not decoy:
-                decoy = fallback_decoy
+    if workers == 1:
+        for member in sorted_members:
+            result = _run_member_task(member.name, str(archive_path), verbose)
+            if result.get("ok"):
+                pdb_outputs.extend(result["pdb_outputs"])
+                summary_rows.append(result["summary_row"])
+            else:
+                raise RuntimeError(f"Failed processing {member.name}: {result.get('error')}")
+            bar.update(1)
+        bar.close()
+        return pdb_outputs, summary_rows
 
-            blocks = split_blocks(lines)
-            output_names: list[str] = []
+    try:
+        try:
+            executor = ProcessPoolExecutor(max_workers=workers, max_tasks_per_child=1)
+        except TypeError:
+            executor = ProcessPoolExecutor(max_workers=workers)
 
-            for block in blocks:
-                chain_label = choose_chain_label(block)
-                output_name = f"{complex_name}-{decoy}_{chain_label}.pdb"
-                pdb_outputs.append((output_name, build_clean_pdb(block)))
-                output_names.append(output_name)
-
-            summary_rows.append(
-                {
-                    "complex_name": complex_name,
-                    "decoy": decoy,
-                    "contact": contact,
-                    "score": score,
-                    "rmsd": rmsd,
-                    "protein_1_pdb": output_names[0],
-                    "protein_2_pdb": output_names[1],
-                }
-            )
+        futures = {executor.submit(_run_member_task, member.name, str(archive_path), verbose): member for member in sorted_members}
+        try:
+            for future in as_completed(futures):
+                res = future.result()
+                member = futures[future]
+                if res.get("ok"):
+                    pdb_outputs.extend(res["pdb_outputs"])
+                    summary_rows.append(res["summary_row"])
+                else:
+                    raise RuntimeError(f"Failed processing {member.name}: {res.get('error')}")
+                bar.update(1)
+        finally:
+            for f in futures:
+                f.cancel()
+            executor.shutdown(wait=True)
+    finally:
+        bar.close()
 
     return pdb_outputs, summary_rows
 
@@ -188,7 +287,7 @@ def main() -> None:
     output_zip = Path(args.output)
     output_zip.parent.mkdir(parents=True, exist_ok=True)
 
-    pdb_outputs, summary_rows = process_archive(archive_path)
+    pdb_outputs, summary_rows = process_archive_with_workers(archive_path, workers=getattr(args, 'workers', 1), verbose=getattr(args, 'verbose', False))
     write_zip(output_zip, pdb_outputs, summary_rows)
 
 

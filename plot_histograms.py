@@ -215,8 +215,8 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
     print(f'  Shape: {df.shape}')
     print(f"  Summary types: {df['summary_type'].dropna().unique().tolist()}")
 
-    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
-    axes = axes.reshape(2, 2)
+    fig, axes = plt.subplots(3, 2, figsize=(16, 12))
+    axes = axes.reshape(3, 2)
     
     # Check if both weighted and normal data are present
     has_both_types = 'weighted' in df['summary_type'].values and 'normal' in df['summary_type'].values
@@ -232,10 +232,7 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
         color='#2ca02c',
         alpha=0.70,
     )
-    _add_correlation_box(
-        axes[0, 0],
-        _correlation_label(df, 'gyration_radius', ['flatness', 'roughness', 'scalar_prod']),
-    )
+    # correlation boxes removed in favor of a correlation matrix subplot
     _plot_single_hist(
         axes[0, 1],
         flatness_values,
@@ -244,10 +241,7 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
         color='#9467bd',
         alpha=0.70,
     )
-    _add_correlation_box(
-        axes[0, 1],
-        _correlation_label(df, 'flatness', ['gyration_radius', 'roughness', 'scalar_prod']),
-    )
+    # correlation boxes removed in favor of a correlation matrix subplot
 
     # Second row: roughness (single histogram, normal only) and scalar_prod (weighted vs normal).
     roughness_values = _finite_series(df, 'roughness', summary_type='normal')
@@ -259,10 +253,7 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
         color='#d62728',
         alpha=0.70,
     )
-    _add_correlation_box(
-        axes[1, 0],
-        _correlation_label(df, 'roughness', ['gyration_radius', 'flatness', 'scalar_prod']),
-    )
+    # correlation boxes removed in favor of a correlation matrix subplot
 
     scalar_weighted = _finite_series(df, 'scalar_prod', summary_type='weighted')
     scalar_normal = _finite_series(df, 'scalar_prod', summary_type='normal')
@@ -275,10 +266,102 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
         show_legend=has_both_types,
         legend_loc='upper left',
     )
-    _add_correlation_box(
-        axes[1, 1],
-        _scalar_correlation_label(df, ['gyration_radius', 'flatness', 'roughness'], has_both_types),
+    # scalar correlation box removed; will show matrix instead
+
+    # Third row: radius histogram (normal only). Leave the last panel empty.
+    radius_values = _finite_series(df, 'radius', summary_type='normal')
+    _plot_single_hist(
+        axes[2, 0],
+        radius_values,
+        'Radius',
+        'Radius',
+        color='#17becf',
+        alpha=0.70,
     )
+    # Build and plot a correlation matrix instead of small correlation boxes.
+    # Metrics: gyration_radius, flatness, roughness, scalar_prod (split by summary_type if both present), scalar_prod_uncertainty
+    cols = []
+    base_metrics = ['gyration_radius', 'flatness', 'roughness']
+    for m in base_metrics:
+        if m in df.columns:
+            cols.append(m)
+
+    # handle scalar_prod splitting when both summary types exist
+    if 'scalar_prod' in df.columns:
+        if has_both_types:
+            cols.append('scalar_prod_weighted')
+            cols.append('scalar_prod_normal')
+        else:
+            cols.append('scalar_prod')
+
+    # include radius instead of scalar_prod_uncertainty
+    if 'radius' in df.columns:
+        cols.append('radius')
+
+    # build aligned series dataframe (keep original index so pairwise corr uses pairwise dropna)
+    corr_data = {}
+    for col in cols:
+        if col == 'scalar_prod_weighted':
+            s = pd.Series(pd.NA, index=df.index, dtype='float64')
+            mask = df['summary_type'] == 'weighted'
+            s.loc[mask] = pd.to_numeric(df.loc[mask, 'scalar_prod'], errors='coerce')
+            corr_data[col] = s
+        elif col == 'scalar_prod_normal':
+            s = pd.Series(pd.NA, index=df.index, dtype='float64')
+            mask = df['summary_type'] == 'normal'
+            s.loc[mask] = pd.to_numeric(df.loc[mask, 'scalar_prod'], errors='coerce')
+            corr_data[col] = s
+        else:
+            corr_data[col] = pd.to_numeric(df[col], errors='coerce') if col in df.columns else pd.Series([pd.NA] * len(df))
+
+    corr_df = pd.DataFrame(corr_data)
+    corr_pearson = corr_df.corr(method='pearson')
+    corr_spearman = corr_df.corr(method='spearman')
+
+    # create two small axes inside the area reserved for axes[2,1]
+    area = axes[2, 1].get_position()
+    # remove placeholder axis
+    axes[2, 1].remove()
+
+    # compute matrix widths and center the two matrices horizontally inside the reserved area
+    matrix_w = area.width * 0.42
+    gap = area.width * 0.16
+    total_w = matrix_w * 2 + gap
+    x_center = area.x0 + (area.width - total_w) / 2.0
+    # small positive x_shift moves both matrices right; increase y_shift to move them down
+    x_shift = area.width * 0.03
+    y_shift = area.height * 0.14
+    left_bbox = [x_center + x_shift, area.y0 - y_shift, matrix_w, area.height]
+    right_bbox = [x_center + x_shift + matrix_w + gap, area.y0 - y_shift, matrix_w, area.height]
+
+    ax_p = fig.add_axes(left_bbox)
+    im_p = ax_p.imshow(corr_pearson.values, cmap='coolwarm', vmin=-1.0, vmax=1.0, aspect='auto')
+    ax_p.set_xticks(range(len(corr_pearson.columns)))
+    ax_p.set_yticks(range(len(corr_pearson.index)))
+    # make tick labels smaller to avoid overlap; matrix cell numbers stay readable
+    ax_p.set_xticklabels(corr_pearson.columns, rotation=45, ha='right', fontsize=7)
+    ax_p.set_yticklabels(corr_pearson.index, fontsize=7)
+    ax_p.set_title('Pearson', fontsize=9)
+    for i in range(corr_pearson.shape[0]):
+        for j in range(corr_pearson.shape[1]):
+            val = corr_pearson.iat[i, j]
+            txt = 'n/a' if pd.isna(val) else f"{val:.2f}"
+            ax_p.text(j, i, txt, ha='center', va='center', color='black', fontsize=8)
+    # no colorbar (keep colored cells only)
+
+    ax_s = fig.add_axes(right_bbox)
+    im_s = ax_s.imshow(corr_spearman.values, cmap='coolwarm', vmin=-1.0, vmax=1.0, aspect='auto')
+    ax_s.set_xticks(range(len(corr_spearman.columns)))
+    ax_s.set_yticks(range(len(corr_spearman.index)))
+    ax_s.set_xticklabels(corr_spearman.columns, rotation=45, ha='right', fontsize=7)
+    ax_s.set_yticklabels(corr_spearman.index, fontsize=7)
+    ax_s.set_title('Spearman', fontsize=9)
+    for i in range(corr_spearman.shape[0]):
+        for j in range(corr_spearman.shape[1]):
+            val = corr_spearman.iat[i, j]
+            txt = 'n/a' if pd.isna(val) else f"{val:.2f}"
+            ax_s.text(j, i, txt, ha='center', va='center', color='black', fontsize=8)
+    # no colorbar (keep colored cells only)
 
     fig.suptitle(f'Global Metric Histograms ({_normalize_stem(summary_path)})', fontsize=15, fontweight='bold', y=0.995)
     fig.tight_layout()
