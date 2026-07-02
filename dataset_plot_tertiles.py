@@ -22,6 +22,7 @@ import pandas as pd
 
 
 FEATURES = ['gyration_radius', 'flatness', 'radius']
+FEATURES = ['gyration_radius', 'flatness', 'radius', 'roughness']
 TERTILES = ['low', 'medium', 'large']
 SUMMARY_ORDER = ['weighted', 'normal']
 
