@@ -8,7 +8,6 @@ Automatically detects number of rows and creates subplots for each metric type.
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.colors import to_rgba
 from matplotlib.lines import Line2D
 from pathlib import Path
 import argparse
@@ -174,9 +173,131 @@ def _aggregate_metric_by_summary_type(df_summary, summary_types, ring_ids, metri
     return aggregated
 
 
-def _resolve_output_path(summary_path, output_path=None, output_name=None):
+def _aggregate_real_metric_by_summary_type(
+    df_summary,
+    summary_types,
+    ring_ids,
+    metric_prefix,
+    normalization_mode=None,
+    bin_width=2.0,
+    max_x=50.0,
+):
+    aggregated = {}
+    bin_edges = np.arange(0.0, max_x + bin_width, bin_width)
+    bin_centers = bin_edges[:-1] + bin_width / 2.0
+    bin_ids = list(range(len(bin_centers)))
+
+    for summary_type in summary_types:
+        group = df_summary[df_summary['summary_type'] == summary_type]
+        bin_values = {}
+        per_bin_values = {bid: [] for bid in bin_ids}
+        per_bin_uncertainties = {bid: [] for bid in bin_ids}
+
+        if 'complex_name' not in group.columns:
+            raise ValueError('complex_name column is required to aggregate by complex')
+        if 'radius' not in group.columns:
+            raise ValueError('radius column is required to compute real-valued ring positions')
+
+        for _, complex_group in group.groupby('complex_name', sort=False):
+            radius_values = pd.to_numeric(complex_group['radius'], errors='coerce').to_numpy(dtype=float)
+            radius_values = radius_values[np.isfinite(radius_values)]
+            if len(radius_values) == 0:
+                continue
+
+            radius = float(radius_values[0])
+            if not np.isfinite(radius) or radius <= 0:
+                continue
+
+            complex_means = []
+            complex_uncertainties = []
+            complex_x_positions = []
+
+            for rid in ring_ids:
+                mean_col = f'{metric_prefix}_ring{rid}_mean'
+                unc_col = f'{metric_prefix}_ring{rid}_uncertainty'
+                if mean_col not in complex_group.columns:
+                    complex_means.append(float('nan'))
+                    complex_uncertainties.append(float('nan'))
+                    complex_x_positions.append(float('nan'))
+                    continue
+
+                value = float(complex_group[mean_col].iloc[0])
+                uncertainty = float(complex_group[unc_col].iloc[0]) if unc_col in complex_group.columns else float('nan')
+                x_position = (rid - 0.5) * radius / 10.0
+
+                complex_means.append(value)
+                complex_uncertainties.append(uncertainty)
+                complex_x_positions.append(x_position)
+
+            normalized_means, normalized_uncertainties = _normalize_complex_series(
+                np.array(complex_means, dtype=float),
+                np.array(complex_uncertainties, dtype=float),
+                normalization_mode,
+            )
+
+            for idx, x_position in enumerate(complex_x_positions):
+                if not np.isfinite(x_position) or x_position > max_x:
+                    continue
+
+                bin_index = int(np.floor(x_position / bin_width))
+                bin_index = min(bin_index, len(bin_ids) - 1)
+
+                if np.isfinite(normalized_means[idx]):
+                    per_bin_values[bin_index].append(normalized_means[idx])
+                if np.isfinite(normalized_uncertainties[idx]):
+                    per_bin_uncertainties[bin_index].append(normalized_uncertainties[idx])
+
+        for bid in bin_ids:
+            finite_means = np.array(per_bin_values[bid], dtype=float)
+            finite_uncertainties = np.array(per_bin_uncertainties[bid], dtype=float)
+            if len(finite_means) == 0:
+                bin_values[bid] = {
+                    'mean': float('nan'),
+                    'sample_uncertainty': float('nan'),
+                    'propagated_uncertainty': float('nan'),
+                    'combined_uncertainty': float('nan'),
+                    'count': 0,
+                }
+                continue
+
+            mean_value, sample_uncertainty = _mean_and_sample_uncertainty(finite_means)
+            propagated_uncertainty = _propagated_mean_uncertainty(finite_uncertainties)
+            combined_uncertainty = _combined_uncertainty(sample_uncertainty, propagated_uncertainty)
+
+            bin_values[bid] = {
+                'mean': mean_value,
+                'sample_uncertainty': sample_uncertainty,
+                'propagated_uncertainty': propagated_uncertainty,
+                'combined_uncertainty': combined_uncertainty,
+                'count': int(len(finite_means)),
+            }
+
+        aggregated[summary_type] = {
+            'bin_edges': bin_edges,
+            'bin_centers': bin_centers,
+            'bin_values': bin_values,
+        }
+    return aggregated
+
+
+def _resolve_output_path(summary_path, output_path=None, output_name=None, suffix=''):
     input_stem = summary_path.stem.replace('_summary', '')
     default_stem = output_name or f'{input_stem}_mean_rdf'
+    default_stem = f'{default_stem}{suffix}'
+    if output_path is None:
+        return summary_path.parent / f'{default_stem}.pdf'
+
+    output_path = Path(output_path)
+    if output_path.exists() and output_path.is_dir():
+        return output_path / f'{default_stem}.pdf'
+    if output_path.suffix:
+        return output_path.with_name(f'{default_stem}{output_path.suffix}') if output_name or suffix else output_path
+    return output_path / f'{default_stem}.pdf'
+
+
+def _resolve_real_output_path(summary_path, output_path=None, output_name=None):
+    input_stem = summary_path.stem.replace('_summary', '')
+    default_stem = output_name or f'{input_stem}_real_rdf'
     if output_path is None:
         return summary_path.parent / f'{default_stem}.pdf'
 
@@ -278,7 +399,87 @@ def _plot_metric_panel(
         plt.legend(handles=source_handles, fontsize=10, loc='best', title='file')
 
 
-def plot_radial_histograms(summary_csv_path, output_path=None, output_name=None, compare_summary_csv_path=None):
+def _plot_real_metric_panel(
+    ax,
+    metric_data_by_source,
+    bin_centers,
+    summary_types,
+    metric_label,
+    value_label,
+    source_labels=None,
+):
+    x_positions = np.asarray(bin_centers, dtype=float)
+    source_count = len(metric_data_by_source)
+    offset_step = 0.18 / max(len(summary_types) * max(source_count, 1), 1)
+    uncertainty_scale = 3.0
+    source_styles = [
+        {'marker': 's', 'color': '#1f77b4'},
+        {'marker': 'o', 'color': '#ff7f0e'},
+    ]
+
+    for source_idx, metric_data in enumerate(metric_data_by_source):
+        source_style = source_styles[source_idx % len(source_styles)]
+        for type_idx, summary_type in enumerate(summary_types):
+            bin_values = metric_data[summary_type]['bin_values']
+            means = np.array([bin_values[bid]['mean'] for bid in range(len(bin_centers))], dtype=float)
+            combined_uncertainties = np.array([bin_values[bid]['combined_uncertainty'] for bid in range(len(bin_centers))], dtype=float)
+
+            x_offset = ((source_idx * len(summary_types)) + type_idx - (source_count * len(summary_types)) / 2 + 0.5) * offset_step
+            x_pos = x_positions + x_offset
+            color = source_style['color']
+            marker = source_style['marker']
+
+            ax.errorbar(
+                x_pos,
+                means,
+                yerr=combined_uncertainties * uncertainty_scale,
+                fmt='none',
+                ecolor=color,
+                elinewidth=1.8,
+                capsize=4,
+                capthick=1.4,
+                zorder=2,
+            )
+            ax.scatter(
+                x_pos,
+                means,
+                s=18,
+                marker=marker,
+                facecolors=color,
+                edgecolors='black',
+                linewidth=0.8,
+                alpha=0.95,
+                zorder=3,
+            )
+
+    ax.set_xlabel('Real radial distance bin center (Å)', fontsize=12, fontweight='bold')
+    ax.set_ylabel(value_label, fontsize=12, fontweight='bold')
+    ax.set_title(metric_label, fontsize=13, fontweight='bold')
+    ax.set_xticks(bin_centers)
+    ax.set_xticklabels([f'{center:.0f}' for center in bin_centers], rotation=45)
+    ax.grid(axis='y', alpha=0.3, linestyle='--')
+
+    if source_labels and len(source_labels) > 1:
+        source_handles = []
+        for source_index, source_label in enumerate(source_labels):
+            marker = source_styles[source_index % len(source_styles)]['marker']
+            color = source_styles[source_index % len(source_styles)]['color']
+            source_handles.append(
+                Line2D(
+                    [0], [0],
+                    marker=marker,
+                    linestyle='none',
+                    markerfacecolor=color,
+                    markeredgecolor='black',
+                    markersize=8,
+                    label=source_label,
+                )
+            )
+        plt.sca(ax)
+        plt.legend(handles=source_handles, fontsize=10, loc='best', title='file')
+
+
+def plot_radial_histograms(summary_csv_path, output_path=None, output_name=None, compare_summary_csv_path=None, real_values=False):
     """
     Create two subplots showing ring-by-ring histograms with uncertainties
     for physical and zernike distances.
@@ -308,7 +509,7 @@ def plot_radial_histograms(summary_csv_path, output_path=None, output_name=None,
     # Extract ring IDs from columns
     ring_ids = _ring_ids_from_columns(df_summaries[0].columns, 'physical_ring')
     print(f"  Number of rings: {len(ring_ids)}")
-    
+
     summary_types = _ordered_summary_types(
         sorted({summary_type for df_summary in df_summaries for summary_type in df_summary['summary_type'].dropna().unique().tolist()})
     )
@@ -318,6 +519,56 @@ def plot_radial_histograms(summary_csv_path, output_path=None, output_name=None,
     source_labels = [_display_name_from_summary_path(summary_path) for summary_path in summary_paths]
     print(f"  Plot sources: {source_labels}")
     plot_title = ', '.join(source_labels)
+
+    if real_values:
+        for summary_path, df_summary in zip(summary_paths, df_summaries):
+            if 'radius' not in df_summary.columns:
+                raise ValueError(f'radius column is required for real-values plotting: {summary_path}')
+
+        real_physical_data = [
+            _aggregate_real_metric_by_summary_type(df_summary, summary_types, ring_ids, 'physical')
+            for df_summary in df_summaries
+        ]
+        real_zernike_data = [
+            _aggregate_real_metric_by_summary_type(df_summary, summary_types, ring_ids, 'zernike')
+            for df_summary in df_summaries
+        ]
+        for summary_type in summary_types:
+            for source_index, source_label in enumerate(source_labels):
+                counts = [real_physical_data[source_index][summary_type]['bin_values'][bid]['count'] for bid in range(25)]
+                print(f"  real / {source_label} / {summary_type}: bin sample counts {counts}")
+
+        bin_centers = real_physical_data[0][summary_types[0]]['bin_centers']
+        fig, axes = plt.subplots(1, 2, figsize=(18, 7), sharex=True)
+
+        _plot_real_metric_panel(
+            axes[0],
+            real_physical_data,
+            bin_centers,
+            summary_types,
+            'Real Values - Physical Distance per Bin',
+            'Physical Distance (Å)',
+            source_labels=source_labels,
+        )
+        _plot_real_metric_panel(
+            axes[1],
+            real_zernike_data,
+            bin_centers,
+            summary_types,
+            'Real Values - Zernike Distance per Bin',
+            'Zernike Distance',
+            source_labels=source_labels,
+        )
+
+        fig.suptitle(f'Real Radial Values with Uncertainties ({plot_title})', fontsize=14, fontweight='bold', y=0.995)
+        fig.tight_layout()
+
+        real_output_path = _resolve_real_output_path(summary_paths[0], output_path, output_name)
+        fig.savefig(real_output_path, dpi=150, bbox_inches='tight')
+        print(f"✓ Real-values plot saved to {real_output_path}")
+
+        plt.close(fig)
+        return
 
     plot_modes = [
         ('raw', None, 'Raw ring values'),
@@ -405,7 +656,7 @@ def plot_radial_histograms(summary_csv_path, output_path=None, output_name=None,
     fig.tight_layout()
     
     # Save output
-    output_path = _resolve_output_path(summary_path, output_path, output_name)
+    output_path = _resolve_output_path(summary_paths[0], output_path, output_name)
     
     fig.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"\n✓ Plot saved to {output_path}")
@@ -421,11 +672,12 @@ def main():
     parser.add_argument('--compare-summary-csv', help='Optional second summary CSV to plot on the same figure')
     parser.add_argument('-o', '--output', help='Output path for plot (default: <stem>_radial_histograms.png)')
     parser.add_argument('--output-name', help='Output file name without extension (default: <summary>_radial_histograms)')
+    parser.add_argument('--real-values', action='store_true', help='Also create a plot that bins rings by their real radial distance')
     
     args = parser.parse_args()
     
     try:
-        plot_radial_histograms(args.summary_csv, args.output, args.output_name, args.compare_summary_csv)
+        plot_radial_histograms(args.summary_csv, args.output, args.output_name, args.compare_summary_csv, real_values=args.real_values)
     except Exception as e:
         print(f"✗ Error: {e}", file=sys.stderr)
         sys.exit(1)
