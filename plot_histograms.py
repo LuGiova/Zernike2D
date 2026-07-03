@@ -13,9 +13,9 @@ import pandas as pd
 
 
 METRICS = [
-    ('gyration_radius', 'Gyration Radius'),
+    ('gyration_radius', 'Gyration Radius (Å)'),
     ('flatness', 'Flatness'),
-    ('roughness', 'Roughness'),
+    ('roughness', 'Roughness (Å)'),
     ('scalar_prod', 'Scalar Product'),
     ('scalar_prod_uncertainty', 'Scalar Product Uncertainty'),
 ]
@@ -165,6 +165,12 @@ def _hist_bins(*series: np.ndarray) -> np.ndarray | int:
     return np.histogram_bin_edges(combined, bins='auto')
 
 
+def _label_with_angstrom(label: str) -> str:
+    if label in {'Gyration Radius', 'Roughness', 'Radius'}:
+        return f'{label} (Å)'
+    return label
+
+
 def _plot_single_hist(ax, values, title, xlabel, color='#4c78a8', alpha=0.6):
     bins = _hist_bins(values)
     ax.hist(values, bins=bins, color=color, alpha=alpha, edgecolor='black', linewidth=0.8)
@@ -228,7 +234,7 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
         axes[0, 0],
         gyration_values,
         'Gyration Radius',
-        'Gyration Radius',
+        _label_with_angstrom('Gyration Radius'),
         color='#2ca02c',
         alpha=0.70,
     )
@@ -249,7 +255,7 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
         axes[1, 0],
         roughness_values,
         'Roughness',
-        'Roughness',
+        _label_with_angstrom('Roughness'),
         color='#d62728',
         alpha=0.70,
     )
@@ -274,7 +280,7 @@ def plot_summary_histograms(summary_csv_path: str | Path, output_path: str | Pat
         axes[2, 0],
         radius_values,
         'Radius',
-        'Radius',
+        _label_with_angstrom('Radius'),
         color='#17becf',
         alpha=0.70,
     )

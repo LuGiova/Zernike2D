@@ -383,6 +383,16 @@ def _aggregate_feature_histogram_values(df_summary, feature_name):
     return feature_df[feature_name].to_numpy(dtype=float)
 
 
+def _feature_display_label(feature_name):
+    if feature_name == 'gyration_radius':
+        return 'Gyration Radius (Å)'
+    if feature_name == 'radius':
+        return 'Radius (Å)'
+    if feature_name == 'roughness':
+        return 'Roughness (Å)'
+    return feature_name
+
+
 def _hist_bins(*series):
     values = [np.asarray(series_values, dtype=float) for series_values in series if len(series_values) > 0]
     if not values:
@@ -400,9 +410,38 @@ def _hist_bins(*series):
     return np.histogram_bin_edges(combined, bins='auto')
 
 
-def _plot_hist_panel(ax, hist_values_by_source, source_labels, thresholds, feature_name):
+def _quantile_legend_label(probabilities=None):
+    if probabilities is None:
+        return 'quantile threshold'
+
+    percentages = ', '.join(f'{probability * 100:.1f}%' for probability in probabilities)
+    return f'quantile thresholds ({percentages})'
+
+
+def _source_tertile_legend_label(source_label, feature_values, low_threshold, high_threshold):
+    finite_values = np.asarray(feature_values, dtype=float)
+    finite_values = finite_values[np.isfinite(finite_values)]
+    if len(finite_values) == 0:
+        return f'{source_label}: no data'
+
+    low_count = int(np.sum(finite_values <= low_threshold))
+    medium_count = int(np.sum((finite_values > low_threshold) & (finite_values <= high_threshold)))
+    large_count = int(np.sum(finite_values > high_threshold))
+    total = low_count + medium_count + large_count
+    if total == 0:
+        return f'{source_label}: no data'
+
+    low_pct = low_count / total * 100.0
+    medium_pct = medium_count / total * 100.0
+    large_pct = large_count / total * 100.0
+    return f'{source_label}: low {low_pct:.1f}%, medium {medium_pct:.1f}%, large {large_pct:.1f}%'
+
+
+def _plot_hist_panel(ax, hist_values_by_source, source_labels, thresholds, feature_name, quantiles=None):
     colors = FILE_COLORS[: len(hist_values_by_source)]
     bins = _hist_bins(*hist_values_by_source)
+    threshold_label = _quantile_legend_label(quantiles)
+    display_label = _feature_display_label(feature_name)
 
     for source_values, source_label, color in zip(hist_values_by_source, source_labels, colors):
         ax.hist(
@@ -422,12 +461,12 @@ def _plot_hist_panel(ax, hist_values_by_source, source_labels, thresholds, featu
                 color='black',
                 linestyle='--',
                 linewidth=1.2,
-                label='quantile threshold' if threshold_index == 0 else None,
+                label=threshold_label if threshold_index == 0 else None,
             )
 
-    ax.set_xlabel(feature_name, fontsize=12, fontweight='bold')
+    ax.set_xlabel(display_label, fontsize=12, fontweight='bold')
     ax.set_ylabel('Count', fontsize=12, fontweight='bold')
-    ax.set_title(f'{feature_name} distribution and quantile thresholds', fontsize=13, fontweight='bold')
+    ax.set_title(f'{display_label} distribution and quantile thresholds', fontsize=13, fontweight='bold')
     ax.grid(axis='y', alpha=0.25, linestyle='--')
     ax.legend(fontsize=10, loc='best')
 
@@ -644,10 +683,15 @@ def plot_feature_tertile_histograms(
     print(f'  Plot sources: {source_labels}')
 
     for feature_name in FEATURES:
+        display_label = _feature_display_label(feature_name)
         feature_values_by_source = [_aggregate_feature_histogram_values(df_summary, feature_name) for df_summary in df_summaries]
         combined_feature_values = np.concatenate([values for values in feature_values_by_source if len(values) > 0]) if any(len(values) > 0 for values in feature_values_by_source) else np.array([], dtype=float)
         low_threshold, high_threshold = _quantile_thresholds(combined_feature_values, quantiles)
         print(f'  {feature_name}: q1={low_threshold:.6g}, q2={high_threshold:.6g}')
+        histogram_source_labels = [
+            _source_tertile_legend_label(source_label, source_values, low_threshold, high_threshold)
+            for source_label, source_values in zip(source_labels, feature_values_by_source)
+        ]
 
         if real_values:
             tertile_data_by_source = [
@@ -675,7 +719,14 @@ def plot_feature_tertile_histograms(
             ax_physical = fig.add_subplot(gs[1, 0])
             ax_zernike = fig.add_subplot(gs[1, 1])
 
-            _plot_hist_panel(ax_hist, feature_values_by_source, source_labels, (low_threshold, high_threshold), feature_name)
+            _plot_hist_panel(
+                ax_hist,
+                feature_values_by_source,
+                histogram_source_labels,
+                (low_threshold, high_threshold),
+                feature_name,
+                quantiles,
+            )
 
             _plot_single_file_rdf_panel(
                 ax_physical,
@@ -683,7 +734,7 @@ def plot_feature_tertile_histograms(
                 x_positions,
                 x_tick_labels,
                 summary_types,
-                f'{feature_name} - Physical Distance per Ring',
+                f'{display_label} - Physical Distance per Ring',
                 'Physical Distance (Å)',
                 x_label,
                 uncertainty_scale=uncertainty_scale,
@@ -694,18 +745,25 @@ def plot_feature_tertile_histograms(
                 x_positions,
                 x_tick_labels,
                 summary_types,
-                f'{feature_name} - Zernike Distance per Ring',
+                f'{display_label} - Zernike Distance per Ring',
                 'Zernike Distance',
                 x_label,
                 uncertainty_scale=uncertainty_scale,
             )
 
-            fig.suptitle(f'{feature_name} quantiles with RDFs ({source_labels[0]})', fontsize=15, fontweight='bold', y=0.995)
+            fig.suptitle(f'{display_label} quantiles with RDFs ({source_labels[0]})', fontsize=15, fontweight='bold', y=0.995)
         else:
             fig = plt.figure(figsize=(18, 18))
             gs = fig.add_gridspec(4, 2, height_ratios=[0.9, 1.2, 1.2, 1.2])
             ax_hist = fig.add_subplot(gs[0, :])
-            _plot_hist_panel(ax_hist, feature_values_by_source, source_labels, (low_threshold, high_threshold), feature_name)
+            _plot_hist_panel(
+                ax_hist,
+                feature_values_by_source,
+                histogram_source_labels,
+                (low_threshold, high_threshold),
+                feature_name,
+                quantiles,
+            )
 
             for row_index, tertile in enumerate(TERTILES, start=1):
                 ax_physical = fig.add_subplot(gs[row_index, 0])
@@ -717,7 +775,7 @@ def plot_feature_tertile_histograms(
                     x_positions,
                     x_tick_labels,
                     summary_types,
-                    f'{feature_name} - {tertile.capitalize()} quantile - Physical Distance per Ring',
+                    f'{display_label} - {tertile.capitalize()} quantile - Physical Distance per Ring',
                     'Physical Distance (Å)',
                     source_labels,
                     x_label,
@@ -729,7 +787,7 @@ def plot_feature_tertile_histograms(
                     x_positions,
                     x_tick_labels,
                     summary_types,
-                    f'{feature_name} - {tertile.capitalize()} quantile - Zernike Distance per Ring',
+                    f'{display_label} - {tertile.capitalize()} quantile - Zernike Distance per Ring',
                     'Zernike Distance',
                     source_labels,
                     x_label,
@@ -749,7 +807,7 @@ def plot_feature_tertile_histograms(
                 )
 
             fig.suptitle(
-                f'{feature_name} quantiles with RDFs ({", ".join(source_labels)})',
+                f'{display_label} quantiles with RDFs ({", ".join(source_labels)})',
                 fontsize=15,
                 fontweight='bold',
                 y=0.995,
