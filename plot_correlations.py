@@ -33,9 +33,14 @@ def parse_args():
     )
     parser.add_argument(
         "--curve",
-        choices=["physical", "zernike", "both"],
+        choices=["physical", "zernike", "roughness", "both"],
         default="both",
-        help="Quale g(r) analizzare: physical, zernike o both. Default: both."
+        help="Quale g(r) analizzare: physical, zernike, roughness o both. Default: both."
+    )
+    parser.add_argument(
+        "--plot-differences",
+        action="store_true",
+        help="Se attiva, invece di Pearson/RMSE plotta la media delle differenze native-decoy per ogni g(r)."
     )
     parser.add_argument(
         "--complex-col",
@@ -92,6 +97,8 @@ def check_unique(df, col, label):
 
 
 def ring_columns(prefix):
+    if prefix == "roughness":
+        return [f"roughness_ring{i}" for i in range(1, 11)]
     return [f"{prefix}_ring{i}_mean" for i in range(1, 11)]
 
 
@@ -136,6 +143,32 @@ def compute_pair_metrics(row, native_cols, decoy_cols, min_valid):
         "rmse": rmse,
         "n_valid_rings": n_valid,
     })
+
+
+def compute_pair_differences(row, native_cols, decoy_cols):
+    x = row[native_cols].to_numpy(dtype=float)
+    y = row[decoy_cols].to_numpy(dtype=float)
+    return pd.Series(x - y)
+
+
+def summarize_ring_differences(merged, native_cols, decoy_cols, ring_ids):
+    native_values = merged[native_cols].to_numpy(dtype=float)
+    decoy_values = merged[decoy_cols].to_numpy(dtype=float)
+
+    per_ring_differences = {}
+    difference_of_means = []
+
+    for idx, rid in enumerate(ring_ids):
+        native_ring = native_values[:, idx]
+        decoy_ring = decoy_values[:, idx]
+        valid = np.isfinite(native_ring) & np.isfinite(decoy_ring)
+        per_ring_differences[rid] = native_ring[valid] - decoy_ring[valid]
+
+        native_mean = pd.Series(native_ring).mean(skipna=True)
+        decoy_mean = pd.Series(decoy_ring).mean(skipna=True)
+        difference_of_means.append(float(native_mean - decoy_mean))
+
+    return per_ring_differences, np.asarray(difference_of_means, dtype=float)
 
 
 def fisher_mean(corr_values):
@@ -204,6 +237,62 @@ def plot_hist(ax, values, stats, title, xlabel, bins, include_fisher=True):
     ax.legend(frameon=True)
 
 
+def mean_and_sem(values):
+    values = pd.Series(values).dropna().to_numpy(dtype=float)
+    values = values[np.isfinite(values)]
+    if len(values) == 0:
+        return np.nan, np.nan, 0
+    mean_value = float(np.mean(values))
+    if len(values) == 1:
+        return mean_value, 0.0, 1
+    sem_value = float(np.std(values, ddof=1) / np.sqrt(len(values)))
+    return mean_value, sem_value, int(len(values))
+
+
+def plot_difference_panel(ax, ring_ids, per_ring_differences, difference_of_means, title):
+    means = []
+    sems = []
+
+    for rid in ring_ids:
+        mean_value, sem_value, count = mean_and_sem(per_ring_differences[rid])
+        means.append(mean_value)
+        sems.append(sem_value)
+
+    means = np.asarray(means, dtype=float)
+    sems = np.asarray(sems, dtype=float)
+
+    ax.errorbar(
+        ring_ids,
+        means,
+        yerr=sems,
+        fmt="o-",
+        color="#1f77b4",
+        ecolor="#1f77b4",
+        elinewidth=1.5,
+        capsize=4,
+        linewidth=1.5,
+        markersize=4,
+        label="media delle differenze",
+    )
+    ax.plot(
+        ring_ids,
+        difference_of_means,
+        marker="s",
+        linestyle="--",
+        color="#ff7f0e",
+        linewidth=1.5,
+        markersize=4,
+        label="differenza tra le medie",
+    )
+    ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0)
+    ax.set_title(title)
+    ax.set_xlabel("Ring ID")
+    ax.set_ylabel("Mean difference")
+    ax.set_xticks(ring_ids)
+    ax.grid(axis="y", alpha=0.3, linestyle="--")
+    ax.legend(frameon=True)
+
+
 def main():
     args = parse_args()
 
@@ -250,7 +339,48 @@ def main():
     print(f"Native senza decoy: {len(unmatched_native)}")
     print(f"Decoy senza native: {len(unmatched_decoy)}")
 
-    curves = ["physical", "zernike"] if args.curve == "both" else [args.curve]
+    if args.plot_differences:
+        curves = ["physical", "zernike", "roughness"]
+        output_plot = Path(args.output_plot)
+        output_plot.parent.mkdir(parents=True, exist_ok=True)
+
+        fig, axes = plt.subplots(1, len(curves), figsize=(6 * len(curves), 5), sharey=False)
+        axes = np.atleast_1d(axes)
+
+        for ax, curve in zip(axes, curves):
+            native_cols_original = ring_columns(curve)
+            decoy_cols_original = ring_columns(curve)
+
+            validate_columns(native, native_cols_original, "native")
+            validate_columns(decoy, decoy_cols_original, "decoy")
+
+            native_cols = [f"{c}_native" for c in native_cols_original]
+            decoy_cols = [f"{c}_decoy" for c in decoy_cols_original]
+
+            per_ring_differences, difference_of_means = summarize_ring_differences(
+                merged,
+                native_cols,
+                decoy_cols,
+                list(range(1, 11)),
+            )
+            plot_difference_panel(
+                ax,
+                list(range(1, 11)),
+                per_ring_differences,
+                difference_of_means,
+                title=f"Mean native-decoy differences ({curve})",
+            )
+
+        fig.suptitle("Confronto native vs decoy: differenze medie per ring", y=1.02)
+        fig.tight_layout()
+        fig.savefig(output_plot, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+        print(f"\nFile salvato:")
+        print(f"- {output_plot}")
+        return
+
+    curves = ["physical", "zernike", "roughness"] if args.curve == "both" else [args.curve]
 
     output_plot = Path(args.output_plot)
     output_plot.parent.mkdir(parents=True, exist_ok=True)
@@ -294,13 +424,12 @@ def main():
             },
         }
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    plot_specs = [
-        (axes[0, 0], "physical", "pearson"),
-        (axes[0, 1], "physical", "rmse"),
-        (axes[1, 0], "zernike", "pearson"),
-        (axes[1, 1], "zernike", "rmse"),
-    ]
+    fig, axes = plt.subplots(len(curves), 2, figsize=(14, 5 * len(curves)))
+    axes = np.atleast_2d(axes)
+    plot_specs = []
+    for row_index, curve in enumerate(curves):
+        plot_specs.append((axes[row_index, 0], curve, "pearson"))
+        plot_specs.append((axes[row_index, 1], curve, "rmse"))
 
     for ax, curve, metric in plot_specs:
         if curve not in plot_data:
