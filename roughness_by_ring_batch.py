@@ -30,6 +30,7 @@ from get_complementary_plane import (
     _discover_pdb_pairs_from_zip,
     _extract_zip_member,
     _suppress_worker_output,
+    _stable_seed_from_parts,
     _write_failure,
 )
 from plane_geometry import (
@@ -141,6 +142,7 @@ class RoughnessByRingCalculator:
             ring_ids2,
             self.points,
             n_rings=N_RINGS,
+            random_state=_stable_seed_from_parts(self.file_name1, self.file_name2, self.threshold, self.points, 'default'),
         )
 
         if sampled_pairs.empty:

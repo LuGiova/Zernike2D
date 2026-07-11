@@ -63,12 +63,18 @@ Function used:
 
 How it works:
 - For each ring, points from binding site 1 are sorted by polar angle around the projected center.
-- Up to `n` points are selected from site 1 with angular spacing.
-- Selected site-1 points are matched one-to-one with site-2 points in the same ring using Hungarian assignment (`linear_sum_assignment`) on plane distance.
+- A sparse initial subset is taken from site 1 with angular spacing.
+- If that subset cannot produce the requested number of pairs, extra site-1 points are reintroduced from the discarded pool using a deterministic pseudo-random order derived from the input files and parameters.
+- Selected site-1 points are matched one-to-one with site-2 points in the same ring using Hungarian assignment (`linear_sum_assignment`) on 3D physical distance.
+- Candidate pairs whose physical distance is greater than 6 Å are discarded.
 
 Effect of `-n`:
 - Target upper bound of selected pairs per ring.
 - Actual count is limited by availability in both ring subsets.
+
+Outer-ring fallback:
+- If the outer ring yields fewer than half of the requested pairs, the workflow retries the whole ring construction with a smaller outer radius.
+- The radius is reduced gradually until a satisfactory outer ring is found or no better radius is available.
 
 Summary behavior:
 - Produces **one summary row** by default:
@@ -80,6 +86,9 @@ Summary behavior:
 Hungarian matching (short explanation):
 - It solves a minimum-cost one-to-one assignment on a distance matrix.
 - It is used specifically to prevent multiple bs1 points from choosing the same bs2 point.
+
+Reproducibility note:
+- The extra candidate order in `default` sampling is deterministic for a given input pair and parameter set, so repeated runs produce the same matches.
 
 ### 2) `angular_cells` strategy
 
@@ -321,6 +330,12 @@ Global columns:
 - `scalar_prod_uncertainty`
 - `summary_type` (`weighted` or `normal`)
 - `radius` (outer binding-site circle radius)
+
+Final summary column order:
+- per-ring physical columns for rings 1..10
+- per-ring Zernike columns for rings 1..10
+- global columns listed above
+- `roughness_ring1` .. `roughness_ring10` appended at the end
 
 In batch summary, extra leading columns are added:
 - `complex_name`

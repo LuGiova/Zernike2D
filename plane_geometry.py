@@ -64,7 +64,7 @@ def segment_plane_intersection(point1, point2, plane_point, plane_normal):
     return point1 + t * direction
 
 
-def build_concentric_rings(plane_coords1, plane_coords2, center_uv, n_rings=10, min_outer_points=10):
+def build_concentric_rings(plane_coords1, plane_coords2, center_uv, n_rings=10, min_outer_points=10, radius_cap=None):
     center_uv = np.asarray(center_uv, dtype=float)
     radii1 = np.linalg.norm(plane_coords1 - center_uv, axis=1)
     radii2 = np.linalg.norm(plane_coords2 - center_uv, axis=1)
@@ -90,7 +90,7 @@ def build_concentric_rings(plane_coords1, plane_coords2, center_uv, n_rings=10, 
     
     adaptive_min_outer_points = int(adaptive_min_outer_points)
 
-    radius = max_radius
+    radius = max_radius if radius_cap is None else float(min(max_radius, radius_cap))
     for _ in range(200):
         ring_width = radius / float(n_rings)
         if np.isclose(ring_width, 0.0):
@@ -114,11 +114,36 @@ def build_concentric_rings(plane_coords1, plane_coords2, center_uv, n_rings=10, 
     raise ValueError(f'Unable to find a circle radius where the outer ring contains at least {adaptive_min_outer_points} points for both binding sites')
 
 
-def select_ring_pairs(plane_coords1, plane_coords2, coords1, coords2, center_uv, plane_point, plane_normal, basis, radius, ring_ids1, ring_ids2, points_per_ring, n_rings=10):
+def _match_ring_pairs_by_physical_distance(candidate_indices1, indices2, coords1, coords2):
+    return _match_ring_pairs_by_physical_distance_with_limit(candidate_indices1, indices2, coords1, coords2, max_distance=6.0)
+
+
+def _match_ring_pairs_by_physical_distance_with_limit(candidate_indices1, indices2, coords1, coords2, max_distance):
+    candidate_indices1 = np.asarray(candidate_indices1, dtype=int)
+    indices2 = np.asarray(indices2, dtype=int)
+
+    if len(candidate_indices1) == 0 or len(indices2) == 0:
+        return np.array([], dtype=int), np.array([], dtype=int)
+
+    distance_matrix = np.linalg.norm(
+        coords1[candidate_indices1][:, None, :] - coords2[indices2][None, :, :],
+        axis=2,
+    )
+    if max_distance is not None:
+        distance_matrix = np.where(distance_matrix <= float(max_distance), distance_matrix, float(max_distance) + 1.0e6)
+    row_ind, col_ind = linear_sum_assignment(distance_matrix)
+
+    selected_distances = distance_matrix[row_ind, col_ind]
+    valid_mask = selected_distances <= float(max_distance)
+    return candidate_indices1[row_ind[valid_mask]], indices2[col_ind[valid_mask]]
+
+
+def select_ring_pairs(plane_coords1, plane_coords2, coords1, coords2, center_uv, plane_point, plane_normal, basis, radius, ring_ids1, ring_ids2, points_per_ring, n_rings=10, random_state=None):
     center_uv = np.asarray(center_uv, dtype=float)
     relative1 = plane_coords1 - center_uv
     relative2 = plane_coords2 - center_uv
     angle1 = np.arctan2(relative1[:, 1], relative1[:, 0])
+    rng = np.random.default_rng(random_state)
 
     records = []
     for ring_id in range(n_rings):
@@ -132,18 +157,26 @@ def select_ring_pairs(plane_coords1, plane_coords2, coords1, coords2, center_uv,
         if target_count < 1:
             continue
 
-        if len(order1) > target_count:
-            chosen1 = order1[np.linspace(0, len(order1) - 1, target_count, dtype=int)]
+        initial_count = max(1, int(np.ceil(target_count / 2.0)))
+        initial_count = min(initial_count, len(order1))
+        if initial_count == len(order1):
+            candidate_indices1 = list(order1)
+            remaining_candidates = []
         else:
-            chosen1 = order1
+            selected_positions = np.linspace(0, len(order1) - 1, initial_count, dtype=int)
+            selected_positions = np.unique(selected_positions)
+            candidate_indices1 = list(order1[selected_positions])
+            selected_set = {int(idx) for idx in candidate_indices1}
+            remaining_candidates = [int(idx) for idx in order1 if int(idx) not in selected_set]
+            rng.shuffle(remaining_candidates)
 
-        distance_matrix = np.linalg.norm(
-            plane_coords1[chosen1][:, None, :] - plane_coords2[indices2][None, :, :],
-            axis=2,
-        )
-        row_ind, col_ind = linear_sum_assignment(distance_matrix)
-        chosen1 = chosen1[row_ind]
-        chosen2 = indices2[col_ind]
+        chosen1 = np.array([], dtype=int)
+        chosen2 = np.array([], dtype=int)
+        while True:
+            chosen1, chosen2 = _match_ring_pairs_by_physical_distance(candidate_indices1, indices2, coords1, coords2)
+            if len(chosen1) >= target_count or not remaining_candidates:
+                break
+            candidate_indices1.append(remaining_candidates.pop(0))
 
         for idx1, idx2 in zip(chosen1, chosen2):
             proj1 = plane_coords1[idx1]

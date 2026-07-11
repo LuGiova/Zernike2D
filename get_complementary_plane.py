@@ -1,4 +1,5 @@
 import gc
+import hashlib
 import os
 import shutil
 import time
@@ -199,52 +200,16 @@ class ComplementaryPlane:
         bs2_pc3_var = float(np.var(bs2_pc3))
 
         self._log('Projecting the binding-site centroid on the plane and building concentric rings')
-        circle_radius, ring_width, _, _, ring_ids1, ring_ids2 = build_concentric_rings(
-            plane_coords1,
-            plane_coords2,
-            center_uv,
-            n_rings=10,
-            min_outer_points=10,
-        )
-        self._log(f'Circle center projected at u={center_uv[0]:.6f}, v={center_uv[1]:.6f}')
-        self._log(f'Final circle radius={circle_radius:.6f}; ring width={ring_width:.6f}')
 
-        # Choose sampling strategy
-        if self.sampling_strategy == 'angular_cells':
-            self._log(f'Using angular cells sampling strategy with {self.points} target cells per ring')
-            sampled_pairs = select_ring_pairs_angular_cells(
+        def _run_default_sampling(radius_cap=None):
+            circle_radius, ring_width, _, _, ring_ids1, ring_ids2 = build_concentric_rings(
                 plane_coords1,
                 plane_coords2,
-                coords_bs1,
-                coords_bs2,
                 center_uv,
-                centroid,
-                plane_normal,
-                basis,
-                circle_radius,
-                ring_ids1,
-                ring_ids2,
-                self.points,
                 n_rings=10,
+                min_outer_points=10,
+                radius_cap=radius_cap,
             )
-        elif self.sampling_strategy == 'kmeans':
-            self._log(f'Using K-Means sampling strategy with {self.points} clusters per ring')
-            sampled_pairs = select_ring_pairs_kmeans(
-                plane_coords1,
-                plane_coords2,
-                coords_bs1,
-                coords_bs2,
-                center_uv,
-                centroid,
-                plane_normal,
-                basis,
-                circle_radius,
-                ring_ids1,
-                ring_ids2,
-                self.points,
-                n_rings=10,
-            )
-        else:  # default
             sampled_pairs = select_ring_pairs(
                 plane_coords1,
                 plane_coords2,
@@ -259,7 +224,83 @@ class ComplementaryPlane:
                 ring_ids2,
                 self.points,
                 n_rings=10,
+                random_state=_stable_seed_from_parts(self.file_name1, self.file_name2, self.threshold, self.points, self.sampling_strategy),
             )
+            return circle_radius, ring_width, ring_ids1, ring_ids2, sampled_pairs
+
+        if self.sampling_strategy == 'default':
+            outer_ring_threshold = max(1, int(np.ceil(self.points / 2.0)))
+            radius_cap = None
+            last_result = None
+            for _ in range(10):
+                try:
+                    circle_radius, ring_width, ring_ids1, ring_ids2, sampled_pairs = _run_default_sampling(radius_cap)
+                except ValueError:
+                    if last_result is None:
+                        raise
+                    break
+                last_result = (circle_radius, ring_width, ring_ids1, ring_ids2, sampled_pairs)
+                if sampled_pairs.empty:
+                    raise ValueError('Ring-based sampling produced no matched pairs')
+
+                outer_ring_count = int((sampled_pairs['ring_id'] == 10).sum())
+                if outer_ring_count >= outer_ring_threshold:
+                    break
+
+                radius_cap = circle_radius * 0.9
+
+            circle_radius, ring_width, ring_ids1, ring_ids2, sampled_pairs = last_result
+            self._log(f'Circle center projected at u={center_uv[0]:.6f}, v={center_uv[1]:.6f}')
+            self._log(f'Final circle radius={circle_radius:.6f}; ring width={ring_width:.6f}')
+        else:
+            circle_radius, ring_width, _, _, ring_ids1, ring_ids2 = build_concentric_rings(
+                plane_coords1,
+                plane_coords2,
+                center_uv,
+                n_rings=10,
+                min_outer_points=10,
+            )
+
+            self._log(f'Circle center projected at u={center_uv[0]:.6f}, v={center_uv[1]:.6f}')
+            self._log(f'Final circle radius={circle_radius:.6f}; ring width={ring_width:.6f}')
+
+            # Choose sampling strategy
+            if self.sampling_strategy == 'angular_cells':
+                self._log(f'Using angular cells sampling strategy with {self.points} target cells per ring')
+                sampled_pairs = select_ring_pairs_angular_cells(
+                    plane_coords1,
+                    plane_coords2,
+                    coords_bs1,
+                    coords_bs2,
+                    center_uv,
+                    centroid,
+                    plane_normal,
+                    basis,
+                    circle_radius,
+                    ring_ids1,
+                    ring_ids2,
+                    self.points,
+                    n_rings=10,
+                )
+            elif self.sampling_strategy == 'kmeans':
+                self._log(f'Using K-Means sampling strategy with {self.points} clusters per ring')
+                sampled_pairs = select_ring_pairs_kmeans(
+                    plane_coords1,
+                    plane_coords2,
+                    coords_bs1,
+                    coords_bs2,
+                    center_uv,
+                    centroid,
+                    plane_normal,
+                    basis,
+                    circle_radius,
+                    ring_ids1,
+                    ring_ids2,
+                    self.points,
+                    n_rings=10,
+                )
+            else:
+                raise ValueError(f"Unsupported sampling strategy: {self.sampling_strategy}")
 
         if sampled_pairs.empty:
             raise ValueError('Ring-based sampling produced no matched pairs')
@@ -365,6 +406,7 @@ class ComplementaryPlane:
                     row[f'physical_ring{rid}_uncertainty'] = float('nan')
                     row[f'zernike_ring{rid}_mean'] = float('nan')
                     row[f'zernike_ring{rid}_uncertainty'] = float('nan')
+                    row[f'roughness_ring{rid}'] = float('nan')
                     continue
 
                 ring_plane_coords = ring_sub[['plane_u1', 'plane_v1']].to_numpy(dtype=float)
@@ -375,10 +417,14 @@ class ComplementaryPlane:
                     phys_mean, phys_unc = normal_stats(ring_sub['physical_distance'].to_numpy(dtype=float))
                     zern_mean, zern_unc = normal_stats(ring_sub['zernike_distance'].to_numpy(dtype=float))
 
+                roughness1 = float(np.var(ring_sub['PC3_1'].to_numpy(dtype=float)))
+                roughness2 = float(np.var(ring_sub['PC3_2'].to_numpy(dtype=float)))
+
                 row[f'physical_ring{rid}_mean'] = phys_mean
                 row[f'physical_ring{rid}_uncertainty'] = phys_unc
                 row[f'zernike_ring{rid}_mean'] = zern_mean
                 row[f'zernike_ring{rid}_uncertainty'] = zern_unc
+                row[f'roughness_ring{rid}'] = float(np.sqrt((roughness1 + roughness2) / 2.0))
 
             pc3_mean = float((bs1_pc3_mean + bs2_pc3_mean) / 2.0)
             roughness_value = float(np.sqrt((bs1_pc3_var + bs2_pc3_var) / 2.0))
@@ -421,6 +467,8 @@ class ComplementaryPlane:
             'summary_type',
             'radius',
         ])
+        for rid in ring_ids:
+            summary_column_order.append(f'roughness_ring{rid}')
         summary_df = summary_df[summary_column_order]
 
         if self.output_name:
@@ -492,6 +540,12 @@ def _split_complex_stem(stem):
     if chain_tag and chain_tag.isalnum():
         return complex_name, chain_tag
     return stem, ''
+
+
+def _stable_seed_from_parts(*parts):
+    text = '|'.join(str(part) for part in parts)
+    digest = hashlib.sha256(text.encode('utf-8')).digest()
+    return int.from_bytes(digest[:8], 'big', signed=False)
 
 
 def _sort_pair_items(items):

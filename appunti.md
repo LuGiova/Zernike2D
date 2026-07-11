@@ -34,6 +34,17 @@ This introduced:
 - execution of all three sampling strategies on the batch dataset
 - aggregation of results across the whole dataset
 
+### 4. Default Sampling Update
+
+The `default` sampling was refined to make the output more stable and closer to the physical interface geometry.
+
+Main details:
+- site-1 points are still picked sparsely at first, but any extra points are drawn from the discarded pool rather than from the next angular neighbors
+- the extra-points pool is shuffled with a deterministic seed, so the run is reproducible for the same inputs and parameters
+- candidate pairs are accepted only if their physical distance is at most 6 Å
+- if the outer ring is too sparse, the whole construction is retried with a smaller outer radius
+- the summary CSV keeps the ring-wise physical and Zernike columns first, then the global metrics, and finally `roughness_ring1..10` after `radius`
+
 ## Analyses Performed
 
 ### RDF Profiles
