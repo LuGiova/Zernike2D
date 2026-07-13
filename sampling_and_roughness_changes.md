@@ -13,6 +13,7 @@ Main changes:
 - matching is done with Hungarian assignment on 3D physical distance
 - pairs are accepted only if their physical distance is at most 6 Angstrom
 - if the outer ring is too sparse, the whole ring construction is retried with a smaller outer radius
+- **the representative point is now the projection of the pair midpoint onto the plane, not the segment-plane intersection**
 
 ## Roughness per Ring
 

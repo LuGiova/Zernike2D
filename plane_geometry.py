@@ -181,9 +181,9 @@ def select_ring_pairs(plane_coords1, plane_coords2, coords1, coords2, center_uv,
         for idx1, idx2 in zip(chosen1, chosen2):
             proj1 = plane_coords1[idx1]
             proj2 = plane_coords2[idx2]
-            intersection_3d = segment_plane_intersection(coords1[idx1], coords2[idx2], plane_point, plane_normal)
-            intersection_uv, intersection_proj = project_point_to_plane(intersection_3d, plane_point, basis)
-            relative_intersection = intersection_uv - center_uv
+            midpoint_3d = (coords1[idx1] + coords2[idx2]) / 2.0
+            midpoint_uv, midpoint_proj = project_point_to_plane(midpoint_3d, plane_point, basis)
+            relative_intersection = midpoint_uv - center_uv
             records.append({
                 'idx1': int(idx1),
                 'idx2': int(idx2),
@@ -197,11 +197,11 @@ def select_ring_pairs(plane_coords1, plane_coords2, coords1, coords2, center_uv,
                 'plane_v1': float(proj1[1]),
                 'plane_u2': float(proj2[0]),
                 'plane_v2': float(proj2[1]),
-                'plane_u': float(intersection_uv[0]),
-                'plane_v': float(intersection_uv[1]),
-                'rep_x': float(intersection_proj[0]),
-                'rep_y': float(intersection_proj[1]),
-                'rep_z': float(intersection_proj[2]),
+                'plane_u': float(midpoint_uv[0]),
+                'plane_v': float(midpoint_uv[1]),
+                'rep_x': float(midpoint_proj[0]),
+                'rep_y': float(midpoint_proj[1]),
+                'rep_z': float(midpoint_proj[2]),
                 'theta': float(np.arctan2(relative_intersection[1], relative_intersection[0])),
                 'radial_distance': float(np.linalg.norm(relative_intersection)),
                 'ring_radius1': float(np.linalg.norm(proj1 - center_uv)),

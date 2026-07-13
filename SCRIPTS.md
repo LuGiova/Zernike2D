@@ -39,15 +39,16 @@ For each protein pair, the script does the following:
 6. Shrink circle radius iteratively until the outer ring has enough points on both sides.
 7. Apply one sampling strategy (`default`, `angular_cells`, or `kmeans`) to generate matched pairs per ring.
 8. For matched pairs, compute:
-	 - representative point (`rep_x`, `rep_y`, `rep_z`) from segment-plane intersection,
+	 - representative point (`rep_x`, `rep_y`, `rep_z`): projection of the pair midpoint onto the plane (for `default`), or segment-plane intersection (for other strategies),
 	 - physical distance between 3D points,
 	 - Zernike distance using plane-normal aligned local axes (via `zepyros`),
 	 - normal scalar product,
 	 - PC3-derived roughness metrics.
 
 Note on coordinates:
-- `rep_x/rep_y/rep_z` is always the 3D segment-plane intersection, including `angular_cells`.
-- In `angular_cells`, `plane_u/plane_v` is stored as cell-center UV (`(proj1 + proj2)/2`), not as UV of the intersection.
+- In `default`: `rep_x/rep_y/rep_z` is the 3D projection of the pair midpoint; `plane_u/plane_v` is the 2D projection of the midpoint.
+- In `angular_cells`: `rep_x/rep_y/rep_z` is the 3D segment-plane intersection; `plane_u/plane_v` is stored as cell-center UV (`(proj1 + proj2)/2`), not as UV of the intersection.
+- In `kmeans`: `rep_x/rep_y/rep_z` is the 3D segment-plane intersection; `plane_u/plane_v` is the cluster centroid UV.
 9. Write summary CSV (always in single mode), optionally detailed CSV (`--csv`), optionally polar plot (`-p`).
 
 ---
