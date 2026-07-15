@@ -10,7 +10,7 @@ Main changes:
 - site-1 points are still selected sparsely at first
 - if that initial subset does not produce enough pairs, extra site-1 points are taken from the discarded pool
 - the extra candidates are shuffled with a deterministic seed, so the same inputs and parameters always produce the same pairs
-- matching is done with Hungarian assignment on 3D physical distance
+- matching is done with Hungarian assignment on 3D physical distance, in the previous version, the assignment minimized the distance between the projected points on the plane
 - pairs are accepted only if their physical distance is at most 6 Angstrom
 - if the outer ring is too sparse, the whole ring construction is retried with a smaller outer radius
 - **the representative point is now the projection of the pair midpoint onto the plane, not the segment-plane intersection**
