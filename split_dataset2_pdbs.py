@@ -21,11 +21,11 @@ import tqdm
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Split all PDB files in dataset2.tar.gz into one PDB per protein and store them in a zip "
-            "together with a CSV summary."
+            "Split all PDB files in a tar.gz or zip archive into one PDB per protein and store them "
+            "in a zip together with a CSV summary."
         )
     )
-    parser.add_argument("archive", help="Path to dataset2.tar.gz")
+    parser.add_argument("archive", help="Path to the input archive (.tar.gz or .zip)")
     parser.add_argument("-o", "--output", required=True, help="Output zip path")
     parser.add_argument("-j", "--workers", type=int, default=1, help="Number of worker processes to use")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
@@ -161,17 +161,40 @@ def _suppress_worker_output(enabled: bool):
         os.close(stderr_fd)
 
 
+def _read_member_text(archive_path: Path, member_name: str) -> str:
+    if zipfile.is_zipfile(archive_path):
+        with zipfile.ZipFile(archive_path) as zf:
+            with zf.open(member_name) as handle:
+                return handle.read().decode("utf-8", errors="replace")
+
+    with tarfile.open(archive_path, "r:*") as tar:
+        member = tar.getmember(member_name)
+        extracted = tar.extractfile(member)
+        if extracted is None:
+            raise ValueError(f"Could not extract {member_name}")
+        return extracted.read().decode("utf-8", errors="replace")
+
+
+def _list_archive_members(archive_path: Path) -> list[str]:
+    if zipfile.is_zipfile(archive_path):
+        with zipfile.ZipFile(archive_path) as zf:
+            members = [info.filename for info in zf.infolist() if not info.is_dir() and info.filename.lower().endswith(".pdb")]
+    else:
+        with tarfile.open(archive_path, "r:*") as tar:
+            members = [m.name for m in tar.getmembers() if m.isfile() and m.name.lower().endswith(".pdb")]
+
+    if not members:
+        raise ValueError(f"No PDB files found in {archive_path}")
+
+    return sorted(members)
+
+
 def _run_member_task(member_name: str, archive_path: str, verbose: bool):
-    """Worker: process one PDB member inside the tar.gz archive."""
+    """Worker: process one PDB member inside a tar or zip archive."""
     try:
         with _suppress_worker_output(not verbose):
-            with tarfile.open(archive_path, "r:gz") as tar:
-                member = tar.getmember(member_name)
-                extracted = tar.extractfile(member)
-                if extracted is None:
-                    raise ValueError(f"Could not extract {member_name}")
-                text = extracted.read().decode("utf-8", errors="replace")
-                lines = text.splitlines()
+            text = _read_member_text(Path(archive_path), member_name)
+            lines = text.splitlines()
 
             complex_name, fallback_decoy = parse_pdb_name(member_name)
             decoy, contact, score, rmsd = parse_remarks(lines)
@@ -206,23 +229,20 @@ def process_archive_with_workers(archive_path: Path, workers: int = 1, verbose: 
     pdb_outputs: list[tuple[str, str]] = []
     summary_rows: list[dict[str, str]] = []
 
-    with tarfile.open(archive_path, "r:gz") as tar:
-        members = [m for m in tar.getmembers() if m.isfile() and m.name.lower().endswith(".pdb")]
-        if not members:
-            raise ValueError(f"No PDB files found in {archive_path}")
+    sorted_members = _list_archive_members(archive_path)
 
-    sorted_members = sorted(members, key=lambda item: item.name)
+    bar = tqdm.tqdm(total=len(sorted_members), desc="Splitting complexes", unit="pdb", disable=verbose)
 
     bar = tqdm.tqdm(total=len(sorted_members), desc="Splitting complexes", unit="pdb", disable=verbose)
 
     if workers == 1:
-        for member in sorted_members:
-            result = _run_member_task(member.name, str(archive_path), verbose)
+        for member_name in sorted_members:
+            result = _run_member_task(member_name, str(archive_path), verbose)
             if result.get("ok"):
                 pdb_outputs.extend(result["pdb_outputs"])
                 summary_rows.append(result["summary_row"])
             else:
-                raise RuntimeError(f"Failed processing {member.name}: {result.get('error')}")
+                raise RuntimeError(f"Failed processing {member_name}: {result.get('error')}")
             bar.update(1)
         bar.close()
         return pdb_outputs, summary_rows
@@ -233,16 +253,16 @@ def process_archive_with_workers(archive_path: Path, workers: int = 1, verbose: 
         except TypeError:
             executor = ProcessPoolExecutor(max_workers=workers)
 
-        futures = {executor.submit(_run_member_task, member.name, str(archive_path), verbose): member for member in sorted_members}
+        futures = {executor.submit(_run_member_task, member_name, str(archive_path), verbose): member_name for member_name in sorted_members}
         try:
             for future in as_completed(futures):
                 res = future.result()
-                member = futures[future]
+                member_name = futures[future]
                 if res.get("ok"):
                     pdb_outputs.extend(res["pdb_outputs"])
                     summary_rows.append(res["summary_row"])
                 else:
-                    raise RuntimeError(f"Failed processing {member.name}: {res.get('error')}")
+                    raise RuntimeError(f"Failed processing {member_name}: {res.get('error')}")
                 bar.update(1)
         finally:
             for f in futures:
